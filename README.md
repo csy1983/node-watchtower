@@ -1,2 +1,2 @@
 # watchkeeper
-Automatic docker container update and deploy server built on Node.js and Express
+Automatically update and run docker containers using Node.js
