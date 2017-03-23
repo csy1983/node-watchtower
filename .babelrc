@@ -1,0 +1,8 @@
+{
+  "presets": [ "es2015" ],
+  "plugins": [
+    "transform-decorators-legacy",
+    "transform-export-extensions",
+    "transform-async-to-generator"
+  ]
+}
