@@ -30,7 +30,7 @@ watchtower.on('updateApplied', (containerInfo) => {
 });
 
 watchtower.on('error', (error) => {
-  console.error(error.action, error.container.Id, error.container.State);
+  // console.error(error.action, error.message);
 });
 
 watchtower.activate();

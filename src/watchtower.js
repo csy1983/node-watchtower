@@ -29,8 +29,8 @@ export default class Watchtower extends EventEmitter {
       return { host, repo, tag };
     };
 
-    this.setBusy = () => this.busy = true;
-    this.clearBusy = () => this.busy = false;
+    this.setBusy = () => { this.busy = true; };
+    this.clearBusy = () => { this.busy = false; };
     this.waitForBusy = () => {
       return new Promise((resolve) => {
         const waiter = setInterval(() => {
@@ -42,9 +42,9 @@ export default class Watchtower extends EventEmitter {
       });
     };
 
-    this.waitForDelay = (sec) => {
+    this.waitForDelay = (delay) => {
       return new Promise((resolve) => {
-        setTimeout(resolve, sec * 1000);
+        setTimeout(resolve, delay * 1000);
       });
     };
   }
@@ -87,97 +87,97 @@ export default class Watchtower extends EventEmitter {
   }
 
   async checkout(containerInfo) {
+    const dbg = debug('watchtower:checkout');
     const { host, repo, tag } = this.getImageRepoTag(containerInfo);
     const container = await this.docker.getContainer(containerInfo.Id).inspect();
 
-    /* 0. Skip repo with reserved tags and containers which are not running */
+    /* Skip repo with reserved tags and containers which are not running */
     if (tag.match(/.*-wt-curr$/) ||
         tag.match(/.*-wt-next$/) ||
         tag.match(/.*-wt-prev$/) ||
         !container.State.Running) return;
 
-    /* 1. Backup 'repo:tag' to 'repo:tag-wt-curr'. */
-    debug('watchtower:checkout')(`1. Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
+    dbg(`1. Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-curr` });
 
-    /* 2. Pull latest 'repo:tag' from the server. */
-    debug('watchtower:checkout')(`2. Pull ${repo}:${tag}`);
-    await this.pull(host, repo, tag);
-
-    /* 3. Tag 'repo:tag' to 'repo:tag-wt-next', if 'repo:tag-wt-next' exists then remove it first. */
-    debug('watchtower:checkout')(`3. Tag ${repo}:${tag} to ${repo}:${tag}-wt-next`);
+    dbg(`2. Pull ${repo}:${tag}`);
     try {
+      await this.pull(host, repo, tag);
+    } catch (error) {
+      dbg(`2-1. Pull ${repo}:${tag} failed:`);
+      dbg(error);
+      dbg(`Restoring ${repo}:${tag} and skip this image`);
+      await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
+      return;
+    }
+
+    dbg(`3. Tag ${repo}:${tag} to ${repo}:${tag}-wt-next`);
+    try {
+      dbg(`3-1. If tag ${repo}:${tag}-wt-next is already exists, then remove it first.`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     } catch (error) {}
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-next` });
 
-    /* 4. Restore 'repo:tag-wt-curr' back to 'repo:tag'. */
-    debug('watchtower:checkout')(`4. Restore ${repo}:${tag}-wt-curr back to ${repo}:${tag}`);
+    dbg(`4. Restore ${repo}:${tag}-wt-curr back to ${repo}:${tag}`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
 
-    /* 5. Remove 'repo:tag-wt-curr' which is temporarily created. */
-    debug('watchtower:checkout')(`5. Remove ${repo}:${tag}-wt-curr`);
+    dbg(`5. Remove ${repo}:${tag}-wt-curr  which is temporarily created`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).remove();
 
-    /* 6. Inspect 'repo:tag' and 'repo:tag-wt-next' and compare their 'Created' date string. */
-    debug('watchtower:checkout')(`6. Compare ${repo}:${tag} and ${repo}:${tag}-wt-next`);
+    dbg(`6. Compare creation date between ${repo}:${tag} and ${repo}:${tag}-wt-next`);
     const curr = await this.docker.getImage(`${repo}:${tag}`).inspect();
     const next = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
 
-    /* 7. Check if current image is order then server's. */
+    dbg(`7. current = ${curr.Created}, next = ${next.Created}`);
     if (curr.Created < next.Created) {
       /**
        * 7-1. If yes, emit an 'updateFound' event with container info to client to
        *      notify that there is an new image to update, and keep 'repo:tag-wt-next'
        *      until client has decided to apply the update or not.
        */
-      debug('watchtower:checkout')(`7-1. Emit update event for ${repo}:${tag}`);
+      dbg(`7-1. Emit 'updateFound' event for ${repo}:${tag}`);
       this.emit('updateFound', containerInfo);
     } else {
       /**
        * 7-2. If no, current image is already latest version, remove 'repo:tag-wt-next'
        *      which is temporarily created.
        */
-      debug('watchtower:checkout')(`7-2. ${repo}:${tag} is already up-to-date`);
+      dbg(`7-2. ${repo}:${tag} is already up-to-date`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     }
   }
 
   async applyUpdate(containerInfo) {
+    const dbg = debug('watchtower:applyUpdate');
     const { repo, tag } = this.getImageRepoTag(containerInfo);
 
     if (this.busy) {
-      debug('watchtower:applyUpdate')('Wait for busy...');
+      dbg('Wait for busy...');
       await this.waitForBusy();
     }
+
+    const container = await this.docker.getContainer(containerInfo.Id).inspect();
+    const containerName = container.Name.replace(/^\//, '');
 
     this.setBusy();
 
     try {
-      /* 0. Save create options of container 'repo:tag'. */
-      const container = await this.docker.getContainer(containerInfo.Id).inspect();
-      const containerName = container.Name.replace(/^\//, '');
-      // debug('watchtower:applyUpdate')(container);
-
-      /* 1. Stop 'repo:tag' container and rename it to avoid name conflict. */
-      debug('watchtower:applyUpdate')(`1. Stop container ${repo}:${tag} and rename it`);
+      dbg(`1. Stop container ${repo}:${tag} and rename it to avoid name conflict`);
       await this.docker.getContainer(containerInfo.Id).stop();
       await this.docker.getContainer(containerInfo.Id).rename({
         _query: { name: `${containerName}-${Date.now()}` },
       });
 
-      /* 2. Tag old 'repo:tag' image to 'repo:tag-wt-prev'. */
-      debug('watchtower:applyUpdate')(`2. Tag old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
+      dbg(`2. Tag old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
       await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-prev` });
 
-      /* 3. Remove old 'repo:tag' image. */
-      debug('watchtower:applyUpdate')(`3. Remove old ${repo}:${tag}`);
+      dbg(`3. Remove old ${repo}:${tag} image`);
       await this.docker.getImage(`${repo}:${tag}`).remove();
 
-      /* 4. Tag image 'repo:tag-wt-next' to 'repo:tag'. */
-      debug('watchtower:applyUpdate')(`4. Tag ${repo}:${tag}-wt-next to ${repo}:${tag}`);
+      dbg(`4. Tag image ${repo}:${tag}-wt-next to ${repo}:${tag}`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).tag({ repo, tag });
 
+      dbg(`5. Update 'create options' of container ${repo}:${tag} with latest options`);
       const latestImage = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
       const createOptions = container.Config;
       createOptions._query = { name: containerName };
@@ -185,89 +185,91 @@ export default class Watchtower extends EventEmitter {
       createOptions.Entrypoint = latestImage.Config.Entrypoint;
       createOptions.HostConfig = container.HostConfig;
 
-      /* 5. Create latest container based on image 'repo:tag'. */
-      debug('watchtower:applyUpdate')(`5. Create and run latest ${repo}:${tag} container`);
+      dbg(`6. Create latest container of ${repo}:${tag} image`);
       let latestContainer = await this.docker.createContainer(createOptions);
 
-      /* 6. Start latest container of 'repo:tag'. */
-      debug('watchtower:applyUpdate')(`6. Start latest ${repo}:${tag}`);
+      dbg(`7. Start latest container of ${repo}:${tag} image`);
       latestContainer = await latestContainer.start();
 
-      /* 7. Wait a period of time in seconds before healthy check for new container */
-      debug('watchtower:applyUpdate')(`7. Waiting ${this.config.timeToWaitBeforeHealthyCheck} seconds for healthy check`);
+      dbg(`8. Waiting ${this.config.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
       await this.waitForDelay(this.config.timeToWaitBeforeHealthyCheck);
       const lastestContainerInfo = await latestContainer.inspect();
-      debug('watchtower:applyUpdate')(`${repo}:${tag} healthy check result:\n${JSON.stringify(lastestContainerInfo.State, null, 2)}`);
 
+      dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(lastestContainerInfo.State, null, 2)}`);
       if (lastestContainerInfo.State.Running) {
-        /* 7-1. If latest is running successfully... */
-        /* 7-1-1. Remove 'repo:tag-wt-next' and 'repo:tag-wt-prev'. */
-        debug('watchtower:applyUpdate')(`7-1-1. Latest ${repo}:${tag} is up and running, remove ${tag}-wt-next and ${tag}-wt-prev tag`);
+        dbg(`9-1. Latest ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
 
-        /* 7-1-2. Remove previous container. */
-        debug('watchtower:applyUpdate')(`7-1-2. Remove previous ${repo}:${tag} container`);
+        dbg(`9-2. Remove previous ${repo}:${tag} container`);
         await this.docker.getContainer(containerInfo.Id).remove();
 
-        debug('watchtower:applyUpdate')('7-1-3. Finish this round');
+        dbg(`9-3. Update ${repo}:${tag} successfully`);
         this.clearBusy();
 
         /* Emit an 'updated' event with latest running container */
         this.emit('updateApplied', lastestContainerInfo);
       } else {
-        /* 7-2. If latest is failed... */
-        /* 7-2-1. Remove failed container and its image. */
-        debug('watchtower:applyUpdate')(`7-2-1. Remove failed ${repo}:${tag} container`);
+        dbg(`Remove failed ${repo}:${tag} container and its image`);
         await this.docker.getContainer(lastestContainerInfo.Id).remove();
         await this.docker.getImage(`${repo}:${tag}`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
 
-        /* 7-2-2. Restore 'repo:tag-wt-prev' back to 'repo:tag'. */
-        debug('watchtower:applyUpdate')(`7-2-2. Latest ${repo}:${tag} failed to start, fall back to previous version`);
-        await this.docker.getImage(`${repo}:${tag}-wt-prev`).tag({ repo, tag });
-        await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
-
-        /* 7-2-3. Restart previous working version of 'repo:tag'. */
-        debug('watchtower:applyUpdate')(`7-2-3. Restart previous working version of ${repo}:${tag}`);
-        await this.docker.getContainer(containerInfo.Id).rename({ _query: { name: `${containerName}` } });
-        await this.docker.getContainer(containerInfo.Id).start();
-
-        debug('watchtower:applyUpdate')('7-2-4. Finish this round');
-        this.clearBusy();
-
-        this.emit('error', {
-          action: 'update',
-          container: lastestContainerInfo,
-        });
+        throw new Error('Start container failed');
       }
     } catch (error) {
-      debug('watchtower:applyUpdate')(`Unexpected error: ${error.message}`);
-      /* TODO: Should fall back to previous working version */
+      if (error.message !== 'Start container failed') {
+        dbg('Unexpected error:');
+        dbg(error);
+      }
+
+      try {
+        dbg(`Latest ${repo}:${tag} failed to start, fall back to previous version`);
+        await this.docker.getImage(`${repo}:${tag}-wt-prev`).tag({ repo, tag });
+        await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
+      } catch (skip) {}
+
+      dbg(`Restart previous working version of ${repo}:${tag}`);
+      await this.docker.getContainer(containerInfo.Id).rename({ _query: { name: `${containerName}` } });
+      await this.docker.getContainer(containerInfo.Id).start();
+
+      dbg(`Update ${repo}:${tag} failed`);
+
       this.clearBusy();
       this.emit('error', {
         action: 'update',
+        message: error.message,
         container: containerInfo,
-        error,
       });
     }
   }
 
   pull(host, repo, tag) {
     return new Promise((resolve, reject) => {
-      this.docker.pull(`${repo}:${tag}`, { authconfig: this.registries[host] }, (error, stream) => {
-        if (error) {
-          resolve();
+      this.docker.pull(`${repo}:${tag}`, { authconfig: this.registries[host] }, (pullError, stream) => {
+        debug('watchtower:pull')(`Pulling ${repo}:${tag}`);
+
+        if (pullError) {
+          debug('watchtower:pull')(`Error occurred while pulling ${repo}:${tag}:`);
+          debug('watchtower:pull')(pullError);
+          reject();
           return;
         }
 
-        this.docker.modem.followProgress(stream, (error, output) => {
+        this.docker.modem.followProgress(stream, (progressError) => {
           /* onFinished */
-          if (error) console.error(error);
-          resolve();
+          if (progressError) {
+            debug('watchtower:pull')(`Error occurred while pulling ${repo}:${tag}:`);
+            debug('watchtower:pull')(progressError);
+            reject();
+          } else {
+            resolve();
+          }
         }, (event) => {
           /* onProgress */
-          //console.log(event);
+          if (event.status.startsWith('Status:')) {
+            debug('watchtower:pull')(event.status);
+          }
         });
       });
     });

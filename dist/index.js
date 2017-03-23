@@ -250,10 +250,10 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
     };
 
     _this.setBusy = function () {
-      return _this.busy = true;
+      _this.busy = true;
     };
     _this.clearBusy = function () {
-      return _this.busy = false;
+      _this.busy = false;
     };
     _this.waitForBusy = function () {
       return new Promise(function (resolve) {
@@ -266,9 +266,9 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
       });
     };
 
-    _this.waitForDelay = function (sec) {
+    _this.waitForDelay = function (delay) {
       return new Promise(function (resolve) {
-        setTimeout(resolve, sec * 1000);
+        setTimeout(resolve, delay * 1000);
       });
     };
     return _this;
@@ -366,91 +366,109 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
     key: 'checkout',
     value: function () {
       var _ref2 = _asyncToGenerator(regeneratorRuntime.mark(function _callee2(containerInfo) {
-        var _getImageRepoTag, host, repo, tag, container, curr, next;
+        var dbg, _getImageRepoTag, host, repo, tag, container, curr, next;
 
         return regeneratorRuntime.wrap(function _callee2$(_context2) {
           while (1) {
             switch (_context2.prev = _context2.next) {
               case 0:
+                dbg = (0, _debug2.default)('watchtower:checkout');
                 _getImageRepoTag = this.getImageRepoTag(containerInfo), host = _getImageRepoTag.host, repo = _getImageRepoTag.repo, tag = _getImageRepoTag.tag;
-                _context2.next = 3;
+                _context2.next = 4;
                 return this.docker.getContainer(containerInfo.Id).inspect();
 
-              case 3:
+              case 4:
                 container = _context2.sent;
 
                 if (!(tag.match(/.*-wt-curr$/) || tag.match(/.*-wt-next$/) || tag.match(/.*-wt-prev$/) || !container.State.Running)) {
-                  _context2.next = 6;
+                  _context2.next = 7;
                   break;
                 }
 
                 return _context2.abrupt('return');
 
-              case 6:
+              case 7:
 
-                /* 1. Backup 'repo:tag' to 'repo:tag-wt-curr'. */
-                (0, _debug2.default)('watchtower:checkout')('1. Backup ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-curr');
-                _context2.next = 9;
+                dbg('1. Backup ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-curr');
+                _context2.next = 10;
                 return this.docker.getImage(repo + ':' + tag).tag({ repo: repo, tag: tag + '-wt-curr' });
 
-              case 9:
+              case 10:
 
-                /* 2. Pull latest 'repo:tag' from the server. */
-                (0, _debug2.default)('watchtower:checkout')('2. Pull ' + repo + ':' + tag);
-                _context2.next = 12;
+                dbg('2. Pull ' + repo + ':' + tag);
+                _context2.prev = 11;
+                _context2.next = 14;
                 return this.pull(host, repo, tag);
 
-              case 12:
-
-                /* 3. Tag 'repo:tag' to 'repo:tag-wt-next', if 'repo:tag-wt-next' exists then remove it first. */
-                (0, _debug2.default)('watchtower:checkout')('3. Tag ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-next');
-                _context2.prev = 13;
-                _context2.next = 16;
-                return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
-
-              case 16:
-                _context2.next = 20;
+              case 14:
+                _context2.next = 24;
                 break;
 
-              case 18:
-                _context2.prev = 18;
-                _context2.t0 = _context2['catch'](13);
+              case 16:
+                _context2.prev = 16;
+                _context2.t0 = _context2['catch'](11);
 
-              case 20:
-                _context2.next = 22;
-                return this.docker.getImage(repo + ':' + tag).tag({ repo: repo, tag: tag + '-wt-next' });
-
-              case 22:
-
-                /* 4. Restore 'repo:tag-wt-curr' back to 'repo:tag'. */
-                (0, _debug2.default)('watchtower:checkout')('4. Restore ' + repo + ':' + tag + '-wt-curr back to ' + repo + ':' + tag);
-                _context2.next = 25;
+                dbg('2-1. Pull ' + repo + ':' + tag + ' failed:');
+                dbg(_context2.t0);
+                dbg('Restoring ' + repo + ':' + tag + ' and skip this image');
+                _context2.next = 23;
                 return this.docker.getImage(repo + ':' + tag + '-wt-curr').tag({ repo: repo, tag: tag });
 
-              case 25:
+              case 23:
+                return _context2.abrupt('return');
 
-                /* 5. Remove 'repo:tag-wt-curr' which is temporarily created. */
-                (0, _debug2.default)('watchtower:checkout')('5. Remove ' + repo + ':' + tag + '-wt-curr');
-                _context2.next = 28;
-                return this.docker.getImage(repo + ':' + tag + '-wt-curr').remove();
+              case 24:
 
-              case 28:
+                dbg('3. Tag ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-next');
+                _context2.prev = 25;
 
-                /* 6. Inspect 'repo:tag' and 'repo:tag-wt-next' and compare their 'Created' date string. */
-                (0, _debug2.default)('watchtower:checkout')('6. Compare ' + repo + ':' + tag + ' and ' + repo + ':' + tag + '-wt-next');
-                _context2.next = 31;
-                return this.docker.getImage(repo + ':' + tag).inspect();
+                dbg('3-1. If tag ' + repo + ':' + tag + '-wt-next is already exists, then remove it first.');
+                _context2.next = 29;
+                return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
+
+              case 29:
+                _context2.next = 33;
+                break;
 
               case 31:
+                _context2.prev = 31;
+                _context2.t1 = _context2['catch'](25);
+
+              case 33:
+                _context2.next = 35;
+                return this.docker.getImage(repo + ':' + tag).tag({ repo: repo, tag: tag + '-wt-next' });
+
+              case 35:
+
+                dbg('4. Restore ' + repo + ':' + tag + '-wt-curr back to ' + repo + ':' + tag);
+                _context2.next = 38;
+                return this.docker.getImage(repo + ':' + tag + '-wt-curr').tag({ repo: repo, tag: tag });
+
+              case 38:
+
+                dbg('5. Remove ' + repo + ':' + tag + '-wt-curr  which is temporarily created');
+                _context2.next = 41;
+                return this.docker.getImage(repo + ':' + tag + '-wt-curr').remove();
+
+              case 41:
+
+                dbg('6. Compare creation date between ' + repo + ':' + tag + ' and ' + repo + ':' + tag + '-wt-next');
+                _context2.next = 44;
+                return this.docker.getImage(repo + ':' + tag).inspect();
+
+              case 44:
                 curr = _context2.sent;
-                _context2.next = 34;
+                _context2.next = 47;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').inspect();
 
-              case 34:
+              case 47:
                 next = _context2.sent;
 
+
+                dbg('7. current = ' + curr.Created + ', next = ' + next.Created);
+
                 if (!(curr.Created < next.Created)) {
-                  _context2.next = 40;
+                  _context2.next = 54;
                   break;
                 }
 
@@ -459,26 +477,26 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
                  *      notify that there is an new image to update, and keep 'repo:tag-wt-next'
                  *      until client has decided to apply the update or not.
                  */
-                (0, _debug2.default)('watchtower:checkout')('7-1. Emit update event for ' + repo + ':' + tag);
+                dbg('7-1. Emit \'updateFound\' event for ' + repo + ':' + tag);
                 this.emit('updateFound', containerInfo);
-                _context2.next = 43;
+                _context2.next = 57;
                 break;
 
-              case 40:
+              case 54:
                 /**
                  * 7-2. If no, current image is already latest version, remove 'repo:tag-wt-next'
                  *      which is temporarily created.
                  */
-                (0, _debug2.default)('watchtower:checkout')('7-2. ' + repo + ':' + tag + ' is already up-to-date');
-                _context2.next = 43;
+                dbg('7-2. ' + repo + ':' + tag + ' is already up-to-date');
+                _context2.next = 57;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
 
-              case 43:
+              case 57:
               case 'end':
                 return _context2.stop();
             }
           }
-        }, _callee2, this, [[13, 18]]);
+        }, _callee2, this, [[11, 16], [25, 31]]);
       }));
 
       function checkout(_x2) {
@@ -491,74 +509,72 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
     key: 'applyUpdate',
     value: function () {
       var _ref3 = _asyncToGenerator(regeneratorRuntime.mark(function _callee3(containerInfo) {
-        var _getImageRepoTag2, repo, tag, container, containerName, latestImage, createOptions, latestContainer, lastestContainerInfo;
+        var dbg, _getImageRepoTag2, repo, tag, container, containerName, latestImage, createOptions, latestContainer, lastestContainerInfo;
 
         return regeneratorRuntime.wrap(function _callee3$(_context3) {
           while (1) {
             switch (_context3.prev = _context3.next) {
               case 0:
+                dbg = (0, _debug2.default)('watchtower:applyUpdate');
                 _getImageRepoTag2 = this.getImageRepoTag(containerInfo), repo = _getImageRepoTag2.repo, tag = _getImageRepoTag2.tag;
 
                 if (!this.busy) {
-                  _context3.next = 5;
+                  _context3.next = 6;
                   break;
                 }
 
-                (0, _debug2.default)('watchtower:applyUpdate')('Wait for busy...');
-                _context3.next = 5;
+                dbg('Wait for busy...');
+                _context3.next = 6;
                 return this.waitForBusy();
 
-              case 5:
-
-                this.busy = true;
-
-                _context3.prev = 6;
-                _context3.next = 9;
+              case 6:
+                _context3.next = 8;
                 return this.docker.getContainer(containerInfo.Id).inspect();
 
-              case 9:
+              case 8:
                 container = _context3.sent;
                 containerName = container.Name.replace(/^\//, '');
-                // debug('watchtower:applyUpdate')(container);
 
-                /* 1. Stop 'repo:tag' container and rename it to avoid name conflict. */
 
-                (0, _debug2.default)('watchtower:applyUpdate')('1. Stop container ' + repo + ':' + tag + ' and rename it');
-                _context3.next = 14;
+                this.setBusy();
+
+                _context3.prev = 11;
+
+                dbg('1. Stop container ' + repo + ':' + tag + ' and rename it to avoid name conflict');
+                _context3.next = 15;
                 return this.docker.getContainer(containerInfo.Id).stop();
 
-              case 14:
-                _context3.next = 16;
+              case 15:
+                _context3.next = 17;
                 return this.docker.getContainer(containerInfo.Id).rename({
                   _query: { name: containerName + '-' + Date.now() }
                 });
 
-              case 16:
+              case 17:
 
-                /* 2. Tag old 'repo:tag' image to 'repo:tag-wt-prev'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('2. Tag old ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-prev');
-                _context3.next = 19;
+                dbg('2. Tag old ' + repo + ':' + tag + ' to ' + repo + ':' + tag + '-wt-prev');
+                _context3.next = 20;
                 return this.docker.getImage(repo + ':' + tag).tag({ repo: repo, tag: tag + '-wt-prev' });
 
-              case 19:
+              case 20:
 
-                /* 3. Remove old 'repo:tag' image. */
-                (0, _debug2.default)('watchtower:applyUpdate')('3. Remove old ' + repo + ':' + tag);
-                _context3.next = 22;
+                dbg('3. Remove old ' + repo + ':' + tag + ' image');
+                _context3.next = 23;
                 return this.docker.getImage(repo + ':' + tag).remove();
 
-              case 22:
+              case 23:
 
-                /* 4. Tag image 'repo:tag-wt-next' to 'repo:tag'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('4. Tag ' + repo + ':' + tag + '-wt-next to ' + repo + ':' + tag);
-                _context3.next = 25;
+                dbg('4. Tag image ' + repo + ':' + tag + '-wt-next to ' + repo + ':' + tag);
+                _context3.next = 26;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').tag({ repo: repo, tag: tag });
 
-              case 25:
-                _context3.next = 27;
+              case 26:
+
+                dbg('5. Update \'create options\' of container ' + repo + ':' + tag + ' with latest options');
+                _context3.next = 29;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').inspect();
 
-              case 27:
+              case 29:
                 latestImage = _context3.sent;
                 createOptions = container.Config;
 
@@ -567,140 +583,128 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
                 createOptions.Entrypoint = latestImage.Config.Entrypoint;
                 createOptions.HostConfig = container.HostConfig;
 
-                /* 5. Create latest container based on image 'repo:tag'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('5. Create and run latest ' + repo + ':' + tag + ' container');
-                _context3.next = 36;
+                dbg('6. Create latest container of ' + repo + ':' + tag + ' image');
+                _context3.next = 38;
                 return this.docker.createContainer(createOptions);
 
-              case 36:
+              case 38:
                 latestContainer = _context3.sent;
 
 
-                /* 6. Start latest container of 'repo:tag'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('6. Start latest ' + repo + ':' + tag);
-                _context3.next = 40;
+                dbg('7. Start latest container of ' + repo + ':' + tag + ' image');
+                _context3.next = 42;
                 return latestContainer.start();
 
-              case 40:
+              case 42:
                 latestContainer = _context3.sent;
 
 
-                /* 7. Wait a period of time in seconds before healthy check for new container */
-                (0, _debug2.default)('watchtower:applyUpdate')('7. Waiting ' + this.config.timeToWaitBeforeHealthyCheck + ' seconds for healthy check');
-                _context3.next = 44;
+                dbg('8. Waiting ' + this.config.timeToWaitBeforeHealthyCheck + ' seconds for the container to start before healthy check');
+                _context3.next = 46;
                 return this.waitForDelay(this.config.timeToWaitBeforeHealthyCheck);
 
-              case 44:
-                _context3.next = 46;
+              case 46:
+                _context3.next = 48;
                 return latestContainer.inspect();
 
-              case 46:
+              case 48:
                 lastestContainerInfo = _context3.sent;
 
-                (0, _debug2.default)('watchtower:applyUpdate')(repo + ':' + tag + ' healthy check result:\n' + JSON.stringify(lastestContainerInfo.State, null, 2));
+                dbg(repo + ':' + tag + ' healthy check result:\n' + JSON.stringify(lastestContainerInfo.State, null, 2));
 
                 if (!lastestContainerInfo.State.Running) {
-                  _context3.next = 62;
+                  _context3.next = 64;
                   break;
                 }
 
-                /* 7-1. If latest is running successfully... */
-                /* 7-1-1. Remove 'repo:tag-wt-next' and 'repo:tag-wt-prev'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('7-1-1. Latest ' + repo + ':' + tag + ' is up and running, remove ' + tag + '-wt-next and ' + tag + '-wt-prev tag');
-                _context3.next = 52;
+                dbg('8-1. Latest ' + repo + ':' + tag + ' is up and running, remove temporary tags \'' + tag + '-wt-next\' and \'' + tag + '-wt-prev\'');
+                _context3.next = 54;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
 
-              case 52:
-                _context3.next = 54;
+              case 54:
+                _context3.next = 56;
                 return this.docker.getImage(repo + ':' + tag + '-wt-prev').remove();
 
-              case 54:
+              case 56:
 
-                /* 7-1-2. Remove previous container. */
-                (0, _debug2.default)('watchtower:applyUpdate')('7-1-2. Remove previous ' + repo + ':' + tag + ' container');
-                _context3.next = 57;
+                dbg('8-2. Remove previous ' + repo + ':' + tag + ' container');
+                _context3.next = 59;
                 return this.docker.getContainer(containerInfo.Id).remove();
 
-              case 57:
+              case 59:
 
-                (0, _debug2.default)('watchtower:applyUpdate')('7-1-3. Finish this round');
-                this.busy = false;
+                dbg('8-3. Update ' + repo + ':' + tag + ' successfully');
+                this.clearBusy();
 
                 /* Emit an 'updated' event with latest running container */
                 this.emit('updateApplied', lastestContainerInfo);
-                _context3.next = 82;
+                _context3.next = 72;
                 break;
 
-              case 62:
-                /* 7-2. If latest is failed... */
-                /* 7-2-1. Remove failed container and its image. */
-                (0, _debug2.default)('watchtower:applyUpdate')('7-2-1. Remove failed ' + repo + ':' + tag + ' container');
-                _context3.next = 65;
-                return this.docker.getContainer(lastestContainerInfo.Id).remove();
-
-              case 65:
+              case 64:
+                dbg('Remove failed ' + repo + ':' + tag + ' container');
                 _context3.next = 67;
-                return this.docker.getImage(repo + ':' + tag).remove();
+                return this.docker.getContainer(lastestContainerInfo.Id).remove();
 
               case 67:
                 _context3.next = 69;
-                return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
+                return this.docker.getImage(repo + ':' + tag).remove();
 
               case 69:
+                _context3.next = 71;
+                return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
 
-                /* 7-2-2. Restore 'repo:tag-wt-prev' back to 'repo:tag'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('7-2-2. Latest ' + repo + ':' + tag + ' failed to start, fall back to previous version');
-                _context3.next = 72;
-                return this.docker.getImage(repo + ':' + tag + '-wt-prev').tag({ repo: repo, tag: tag });
+              case 71:
+                throw new Error('Start container failed');
 
               case 72:
-                _context3.next = 74;
-                return this.docker.getImage(repo + ':' + tag + '-wt-prev').remove();
-
-              case 74:
-
-                /* 7-2-3. Restart previous working version of 'repo:tag'. */
-                (0, _debug2.default)('watchtower:applyUpdate')('7-2-3. Restart previous working version of ' + repo + ':' + tag);
-                _context3.next = 77;
-                return this.docker.getContainer(containerInfo.Id).rename({ _query: { name: '' + containerName } });
-
-              case 77:
-                _context3.next = 79;
-                return this.docker.getContainer(containerInfo.Id).start();
-
-              case 79:
-
-                (0, _debug2.default)('watchtower:applyUpdate')('7-2-4. Finish this round');
-                this.busy = false;
-
-                this.emit('error', {
-                  action: 'update',
-                  container: lastestContainerInfo
-                });
-
-              case 82:
-                _context3.next = 89;
+                _context3.next = 90;
                 break;
 
-              case 84:
-                _context3.prev = 84;
-                _context3.t0 = _context3['catch'](6);
+              case 74:
+                _context3.prev = 74;
+                _context3.t0 = _context3['catch'](11);
 
-                (0, _debug2.default)('watchtower:applyUpdate')('Unexpected error: ' + _context3.t0.message);
-                /* TODO: Should fall back to previous working version */
-                this.busy = false;
+                if (_context3.t0.message !== 'Start container failed') {
+                  dbg('Unexpected error:');
+                  dbg(_context3.t0);
+                }
+
+                dbg('Latest ' + repo + ':' + tag + ' failed to start, fall back to previous version');
+                _context3.next = 80;
+                return this.docker.getImage(repo + ':' + tag + '-wt-prev').tag({ repo: repo, tag: tag });
+
+              case 80:
+                _context3.next = 82;
+                return this.docker.getImage(repo + ':' + tag + '-wt-prev').remove();
+
+              case 82:
+
+                dbg('Restart previous working version of ' + repo + ':' + tag);
+                _context3.next = 85;
+                return this.docker.getContainer(containerInfo.Id).rename({ _query: { name: '' + containerName } });
+
+              case 85:
+                _context3.next = 87;
+                return this.docker.getContainer(containerInfo.Id).start();
+
+              case 87:
+
+                dbg('Update ' + repo + ':' + tag + ' failed');
+
+                this.clearBusy();
                 this.emit('error', {
                   action: 'update',
                   container: containerInfo,
                   error: _context3.t0
                 });
 
-              case 89:
+              case 90:
               case 'end':
                 return _context3.stop();
             }
           }
-        }, _callee3, this, [[6, 84]]);
+        }, _callee3, this, [[11, 74]]);
       }));
 
       function applyUpdate(_x3) {
@@ -715,19 +719,30 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
       var _this4 = this;
 
       return new Promise(function (resolve, reject) {
-        _this4.docker.pull(repo + ':' + tag, { authconfig: _this4.registries[host] }, function (error, stream) {
-          if (error) {
-            resolve();
+        _this4.docker.pull(repo + ':' + tag, { authconfig: _this4.registries[host] }, function (pullError, stream) {
+          (0, _debug2.default)('watchtower:pull')('Pulling ' + repo + ':' + tag);
+
+          if (pullError) {
+            (0, _debug2.default)('watchtower:pull')('Error occurred while pulling ' + repo + ':' + tag + ':');
+            (0, _debug2.default)('watchtower:pull')(pullError);
+            reject();
             return;
           }
 
-          _this4.docker.modem.followProgress(stream, function (error, output) {
+          _this4.docker.modem.followProgress(stream, function (progressError) {
             /* onFinished */
-            if (error) console.error(error);
-            resolve();
+            if (progressError) {
+              (0, _debug2.default)('watchtower:pull')('Error occurred while pulling ' + repo + ':' + tag + ':');
+              (0, _debug2.default)('watchtower:pull')(progressError);
+              reject();
+            } else {
+              resolve();
+            }
           }, function (event) {
             /* onProgress */
-            //console.log(event);
+            if (event.status.startsWith('Status:')) {
+              (0, _debug2.default)('watchtower:pull')(event.status);
+            }
           });
         });
       });
