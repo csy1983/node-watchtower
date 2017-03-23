@@ -1,7 +1,8 @@
 {
   "name": "node-watchtower",
   "version": "0.1.0",
-  "description": "Automatically update and run docker containers using Node.js.",
+  "description": "Docker container auto update server that inspired by v2tec/watchtower (https://github.com/v2tec/watchtower), implemented by Node.js.
+",
   "main": "dist/index.js",
   "dependencies": {
     "autobind-decorator": "^1.3.4",
