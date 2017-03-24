@@ -246,12 +246,14 @@ export default class Watchtower extends EventEmitter {
 
   pull(host, repo, tag) {
     return new Promise((resolve, reject) => {
+      const dbg = debug('watchtower:pull');
+
       this.docker.pull(`${repo}:${tag}`, { authconfig: this.registries[host] }, (pullError, stream) => {
-        debug('watchtower:pull')(`Pulling ${repo}:${tag}`);
+        dbg(`Pulling ${repo}:${tag}`);
 
         if (pullError) {
-          debug('watchtower:pull')(`Error occurred while pulling ${repo}:${tag}:`);
-          debug('watchtower:pull')(pullError);
+          dbg(`Error occurred while pulling ${repo}:${tag}:`);
+          dbg(pullError);
           reject();
           return;
         }
@@ -259,8 +261,8 @@ export default class Watchtower extends EventEmitter {
         this.docker.modem.followProgress(stream, (progressError) => {
           /* onFinished */
           if (progressError) {
-            debug('watchtower:pull')(`Error occurred while pulling ${repo}:${tag}:`);
-            debug('watchtower:pull')(progressError);
+            dbg(`Error occurred while pulling ${repo}:${tag}:`);
+            dbg(progressError);
             reject();
           } else {
             resolve();
@@ -268,7 +270,7 @@ export default class Watchtower extends EventEmitter {
         }, (event) => {
           /* onProgress */
           if (event.status.startsWith('Status:')) {
-            debug('watchtower:pull')(event.status);
+            dbg(event.status);
           }
         });
       });
@@ -279,7 +281,18 @@ export default class Watchtower extends EventEmitter {
 
   }
 
-  loadImage(file) {
-
+  loadImage(fileStream) {
+    return new Promise((resolve, reject) => {
+      this.docker.loadImage(fileStream, {}, (error, stream) => {
+        if (error) {
+          reject(error);
+        } else {
+          stream.pipe(process.stdout, { end: true });
+          stream.on('end', () => {
+            resolve();
+          });
+        }
+      });
+    });
   }
 }

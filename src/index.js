@@ -33,7 +33,17 @@ watchtower.on('error', (error) => {
   // console.error(error.action, error.message);
 });
 
-watchtower.activate();
+watchtower.activate().then(() => {
+  let stream = fs.createReadStream('./weblab.tar').on('error', (error) => {
+    console.error(error);
+  });
+
+  stream.once('readable', () => {
+    watchtower.loadImage(stream).then(() => {
+      console.log('Image pushed');
+    });
+  });
+});
 
 app.use(express.static(`${__dirname}/public`));
 app.post('/config', (req, res) => {

@@ -128,10 +128,20 @@ watchtower.on('updateApplied', function (containerInfo) {
 });
 
 watchtower.on('error', function (error) {
-  console.error(error.action, error.container.Id, error.container.State);
+  // console.error(error.action, error.message);
 });
 
-watchtower.activate();
+watchtower.activate().then(function () {
+  var stream = _fs2.default.createReadStream('./weblab.tar').on('error', function (error) {
+    console.error(error);
+  });
+
+  stream.once('readable', function () {
+    watchtower.loadImage(stream).then(function () {
+      console.log('Image pushed');
+    });
+  });
+});
 
 app.use(_express2.default.static(__dirname + '/public'));
 app.post('/config', function (req, res) {
@@ -610,14 +620,15 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
               case 48:
                 lastestContainerInfo = _context3.sent;
 
-                dbg(repo + ':' + tag + ' healthy check result:\n' + JSON.stringify(lastestContainerInfo.State, null, 2));
+
+                dbg('9. ' + repo + ':' + tag + ' healthy check result:\n' + JSON.stringify(lastestContainerInfo.State, null, 2));
 
                 if (!lastestContainerInfo.State.Running) {
                   _context3.next = 64;
                   break;
                 }
 
-                dbg('8-1. Latest ' + repo + ':' + tag + ' is up and running, remove temporary tags \'' + tag + '-wt-next\' and \'' + tag + '-wt-prev\'');
+                dbg('9-1. Latest ' + repo + ':' + tag + ' is up and running, remove temporary tags \'' + tag + '-wt-next\' and \'' + tag + '-wt-prev\'');
                 _context3.next = 54;
                 return this.docker.getImage(repo + ':' + tag + '-wt-next').remove();
 
@@ -627,13 +638,13 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
 
               case 56:
 
-                dbg('8-2. Remove previous ' + repo + ':' + tag + ' container');
+                dbg('9-2. Remove previous ' + repo + ':' + tag + ' container');
                 _context3.next = 59;
                 return this.docker.getContainer(containerInfo.Id).remove();
 
               case 59:
 
-                dbg('8-3. Update ' + repo + ':' + tag + ' successfully');
+                dbg('9-3. Update ' + repo + ':' + tag + ' successfully');
                 this.clearBusy();
 
                 /* Emit an 'updated' event with latest running container */
@@ -642,7 +653,7 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
                 break;
 
               case 64:
-                dbg('Remove failed ' + repo + ':' + tag + ' container');
+                dbg('Remove failed ' + repo + ':' + tag + ' container and its image');
                 _context3.next = 67;
                 return this.docker.getContainer(lastestContainerInfo.Id).remove();
 
@@ -658,7 +669,7 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
                 throw new Error('Start container failed');
 
               case 72:
-                _context3.next = 90;
+                _context3.next = 95;
                 break;
 
               case 74:
@@ -670,41 +681,51 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
                   dbg(_context3.t0);
                 }
 
+                _context3.prev = 77;
+
                 dbg('Latest ' + repo + ':' + tag + ' failed to start, fall back to previous version');
-                _context3.next = 80;
+                _context3.next = 81;
                 return this.docker.getImage(repo + ':' + tag + '-wt-prev').tag({ repo: repo, tag: tag });
 
-              case 80:
-                _context3.next = 82;
+              case 81:
+                _context3.next = 83;
                 return this.docker.getImage(repo + ':' + tag + '-wt-prev').remove();
 
-              case 82:
-
-                dbg('Restart previous working version of ' + repo + ':' + tag);
-                _context3.next = 85;
-                return this.docker.getContainer(containerInfo.Id).rename({ _query: { name: '' + containerName } });
+              case 83:
+                _context3.next = 87;
+                break;
 
               case 85:
-                _context3.next = 87;
-                return this.docker.getContainer(containerInfo.Id).start();
+                _context3.prev = 85;
+                _context3.t1 = _context3['catch'](77);
 
               case 87:
+
+                dbg('Restart previous working version of ' + repo + ':' + tag);
+                _context3.next = 90;
+                return this.docker.getContainer(containerInfo.Id).rename({ _query: { name: '' + containerName } });
+
+              case 90:
+                _context3.next = 92;
+                return this.docker.getContainer(containerInfo.Id).start();
+
+              case 92:
 
                 dbg('Update ' + repo + ':' + tag + ' failed');
 
                 this.clearBusy();
                 this.emit('error', {
                   action: 'update',
-                  container: containerInfo,
-                  error: _context3.t0
+                  message: _context3.t0.message,
+                  container: containerInfo
                 });
 
-              case 90:
+              case 95:
               case 'end':
                 return _context3.stop();
             }
           }
-        }, _callee3, this, [[11, 74]]);
+        }, _callee3, this, [[11, 74], [77, 85]]);
       }));
 
       function applyUpdate(_x3) {
@@ -719,12 +740,14 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
       var _this4 = this;
 
       return new Promise(function (resolve, reject) {
+        var dbg = (0, _debug2.default)('watchtower:pull');
+
         _this4.docker.pull(repo + ':' + tag, { authconfig: _this4.registries[host] }, function (pullError, stream) {
-          (0, _debug2.default)('watchtower:pull')('Pulling ' + repo + ':' + tag);
+          dbg('Pulling ' + repo + ':' + tag);
 
           if (pullError) {
-            (0, _debug2.default)('watchtower:pull')('Error occurred while pulling ' + repo + ':' + tag + ':');
-            (0, _debug2.default)('watchtower:pull')(pullError);
+            dbg('Error occurred while pulling ' + repo + ':' + tag + ':');
+            dbg(pullError);
             reject();
             return;
           }
@@ -732,8 +755,8 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
           _this4.docker.modem.followProgress(stream, function (progressError) {
             /* onFinished */
             if (progressError) {
-              (0, _debug2.default)('watchtower:pull')('Error occurred while pulling ' + repo + ':' + tag + ':');
-              (0, _debug2.default)('watchtower:pull')(progressError);
+              dbg('Error occurred while pulling ' + repo + ':' + tag + ':');
+              dbg(progressError);
               reject();
             } else {
               resolve();
@@ -741,7 +764,7 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
           }, function (event) {
             /* onProgress */
             if (event.status.startsWith('Status:')) {
-              (0, _debug2.default)('watchtower:pull')(event.status);
+              dbg(event.status);
             }
           });
         });
@@ -752,7 +775,22 @@ var Watchtower = (0, _autobindDecorator2.default)(_class = function (_EventEmitt
     value: function push(tag) {}
   }, {
     key: 'loadImage',
-    value: function loadImage(file) {}
+    value: function loadImage(fileStream) {
+      var _this5 = this;
+
+      return new Promise(function (resolve, reject) {
+        _this5.docker.loadImage(fileStream, {}, function (error, stream) {
+          if (error) {
+            reject(error);
+          } else {
+            stream.pipe(process.stdout, { end: true });
+            stream.on('end', function () {
+              resolve();
+            });
+          }
+        });
+      });
+    }
   }]);
 
   return Watchtower;
