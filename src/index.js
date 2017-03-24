@@ -34,14 +34,15 @@ watchtower.on('error', (error) => {
 });
 
 watchtower.activate().then(() => {
-  let stream = fs.createReadStream('./weblab.tar').on('error', (error) => {
+  let stream = fs.createReadStream('./node-7.7.1.tar').on('error', (error) => {
     console.error(error);
   });
 
-  stream.once('readable', () => {
-    watchtower.loadImage(stream).then(() => {
-      console.log('Image pushed');
-    });
+  stream.once('readable', async () => {
+    await watchtower.loadImage(stream);
+    try {
+      await watchtower.push('csy-mbp:5000/node:7.7.1');
+    } catch (error) {}
   });
 });
 
@@ -68,8 +69,8 @@ function terminate() {
     });
 
     setTimeout(() => {
-      console.log('Terminating watchtower...');
-      console.log('Press Ctrl+C again to force terminate watchtower');
+      console.log('Watchtower is currently busy, please wait...');
+      console.log('[ Press Ctrl+C again to force shut me down :\'( ]');
     }, 3000);
   }
 }

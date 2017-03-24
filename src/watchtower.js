@@ -17,8 +17,7 @@ export default class Watchtower extends EventEmitter {
     this.docker = new Docker(this.config.dockerOptions);
     this.registries = {};
 
-    this.getImageRepoTag = (containerInfo) => {
-      let image = containerInfo.Image;
+    this.parseImageName = (image) => {
       if (image.indexOf('/') < 0) image = `/${image}`;
       let comp = url.parse(`docker://${image}`);
       let host = comp.host;
@@ -73,22 +72,19 @@ export default class Watchtower extends EventEmitter {
     this.clearBusy();
   }
 
-  activate() {
-    return new Promise((resolve) => {
-      this.warder = setInterval(this.checkForUpdates, this.config.checkUpdateInterval * 60000);
-      this.checkForUpdates();
-      resolve();
-    });
+  async activate() {
+    this.warder = setInterval(this.checkForUpdates, this.config.checkUpdateInterval * 60000);
+    await this.checkForUpdates();
   }
 
-  inactivate() {
+  async inactivate() {
     clearInterval(this.warder);
-    return this.waitForBusy();
+    await this.waitForBusy();
   }
 
   async checkout(containerInfo) {
     const dbg = debug('watchtower:checkout');
-    const { host, repo, tag } = this.getImageRepoTag(containerInfo);
+    const { host, repo, tag } = this.parseImageName(containerInfo.Image);
     const container = await this.docker.getContainer(containerInfo.Id).inspect();
 
     /* Skip repo with reserved tags and containers which are not running */
@@ -149,7 +145,7 @@ export default class Watchtower extends EventEmitter {
 
   async applyUpdate(containerInfo) {
     const dbg = debug('watchtower:applyUpdate');
-    const { repo, tag } = this.getImageRepoTag(containerInfo);
+    const { repo, tag } = this.parseImageName(containerInfo.Image);
 
     if (this.busy) {
       dbg('Wait for busy...');
@@ -277,22 +273,37 @@ export default class Watchtower extends EventEmitter {
     });
   }
 
-  push(tag) {
+  async push(name) {
+    const dbg = debug('watchtower:push');
+    const { host, repo, tag } = this.parseImageName(name);
+    const image = await this.docker.getImage(`${repo}:${tag}`);
 
+    dbg(`Pushing image ${name}...`);
+
+    if (this.busy) {
+      dbg('Wait for busy...');
+      await this.waitForBusy();
+    }
+    this.setBusy();
+    await image.push({ authconfig: this.registries[host] });
+    this.clearBusy();
+
+    dbg(`Image ${name} pushed`);
   }
 
-  loadImage(fileStream) {
-    return new Promise((resolve, reject) => {
-      this.docker.loadImage(fileStream, {}, (error, stream) => {
-        if (error) {
-          reject(error);
-        } else {
-          stream.pipe(process.stdout, { end: true });
-          stream.on('end', () => {
-            resolve();
-          });
-        }
-      });
-    });
+  async loadImage(fileStream) {
+    const dbg = debug('watchtower:loadImage');
+
+    dbg(`Loading image file ${fileStream.path}...`);
+
+    if (this.busy) {
+      dbg('Wait for busy...');
+      await this.waitForBusy();
+    }
+    this.setBusy();
+    await this.docker.loadImage(fileStream, {});
+    this.clearBusy();
+
+    dbg(`Image file ${fileStream.path} loaded`);
   }
 }
