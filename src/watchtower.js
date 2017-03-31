@@ -79,7 +79,7 @@ export default class Watchtower extends EventEmitter {
               clearInterval(waiter);
               resolve();
             }
-          });
+          }, 1000);
         } else {
           resolve();
         }

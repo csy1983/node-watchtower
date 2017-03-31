@@ -2,11 +2,11 @@
 A docker image updater inspired by [v2tec/watchtower](https://github.com/v2tec/watchtower), implemented by Node.js.
 
 ## Features
-- Auto check if there is image update for each running container periodically.
-- You decide whether to apply the update or not.
-- Auto fall back to previous working version if the updated container failed to start.
-- Load image from a gzipped tarball file or a Readable stream.
-- Push local image to the private registry server.
+- Check if the image of the running container is updated periodically.
+- You decide whether to apply the updated image or not.
+- Fall back to previous working version if the updated container is failed to start.
+- Load local image from a gzipped tarball file or from a Readable stream.
+- Push local image to the registry server.
 
 ## Usage
 ```
@@ -69,4 +69,4 @@ watchtower.inactivate().then(() => {
 Refer to [express-watchtower](https://github.com/csy1983/express-watchtower).
 
 ## TBD
-- Push image to docker hub.
+- Push image to docker hub is not tested yet.

@@ -1,6 +1,6 @@
 {
   "name": "node-watchtower",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "A docker image updater inspired by v2tec/watchtower (https://github.com/v2tec/watchtower), implemented by Node.js.",
   "main": "dist/index.js",
   "dependencies": {
