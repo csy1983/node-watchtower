@@ -46,6 +46,10 @@ export default class Watchtower extends EventEmitter {
       }
     };
 
+    this.unwatch = () => {
+      clearTimeout(this.watcher);
+    };
+
     this.parseImageName = (image) => {
       if (image.indexOf('/') < 0) image = `/${image}`;
       let comp = url.parse(`docker://${image}`);
@@ -61,7 +65,11 @@ export default class Watchtower extends EventEmitter {
       await this.waitForBusy();
       this.busy = true;
     };
-    this.clearBusy = () => { this.busy = false; };
+
+    this.clearBusy = () => {
+      this.busy = false;
+    };
+
     this.waitForBusy = () => {
       return new Promise((resolve) => {
         if (this.busy) {
@@ -158,10 +166,19 @@ export default class Watchtower extends EventEmitter {
    * Inactivate watchtower. Watchtower will wait for busy before termination.
    */
   async inactivate() {
-    clearTimeout(this.watcher);
+    this.unwatch();
     process.removeListener('SIGINT', this.terminate);
     process.removeListener('SIGTERM', this.terminate);
     await this.waitForBusy();
+  }
+
+  /**
+   * Set interval for update check in second.
+   */
+  setCheckUpdateInterval(second) {
+    this.configs.checkUpdateInterval = second;
+    this.unwatch();
+    this.watch();
   }
 
   /**
