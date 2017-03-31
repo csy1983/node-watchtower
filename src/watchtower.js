@@ -2,20 +2,49 @@ import autobind from 'autobind-decorator';
 import Docker from 'dockerode';
 import debug from 'debug';
 import EventEmitter from 'events';
+import fs from 'fs';
+import { Readable } from 'stream';
 import url from 'url';
+import zlib from 'zlib';
+import ManifestExtractor from './extractor';
 
+/**
+ * @class Watchtower
+ * @constructor
+ * @extends EventEmitter
+ */
 @autobind
 export default class Watchtower extends EventEmitter {
-  constructor(config = {}) {
+  /**
+   * Constructor
+   * @param {Object} configs Watchtower configurations:
+   * {
+   *   checkUpdateInterval: Polling interval for checking images updates. Polling is disabled while setting to <= 0. [Default: 180][Unit: second]
+   *   timeToWaitBeforeHealthyCheck: Time to wait for updated container to start before checking its healthy. [Default: 30][Unit: second]
+   *   dockerOptions: Options for creating dockerode instance. [Default: undefined]
+   * }
+   */
+  constructor(configs = {}) {
     super();
-    this.busy = false;
-    this.config = {
-      checkUpdateInterval: config.checkUpdateInterval || 3, /* in minutes */
-      timeToWaitBeforeHealthyCheck: config.timeToWaitBeforeHealthyCheck || 30, /* in seconds */
-      dockerOptions: config.dockerOptions,
+    this.configs = {
+      checkUpdateInterval: configs.checkUpdateInterval || 180, /* in seconds */
+      timeToWaitBeforeHealthyCheck: configs.timeToWaitBeforeHealthyCheck || 30, /* in seconds */
+      dockerOptions: configs.dockerOptions,
     };
-    this.docker = new Docker(this.config.dockerOptions);
-    this.registries = {};
+    this.docker = new Docker(this.configs.dockerOptions);
+    this.manifestExtractor = new ManifestExtractor();
+    this.registryAuths = {};
+    this.busy = false;
+    this.forceTerminate = false;
+
+    this.watch = () => {
+      if (this.configs.checkUpdateInterval > 0) {
+        this.watcher = setTimeout(async () => {
+          await this.checkForUpdates();
+          this.watch();
+        }, this.configs.checkUpdateInterval * 1000);
+      }
+    };
 
     this.parseImageName = (image) => {
       if (image.indexOf('/') < 0) image = `/${image}`;
@@ -28,16 +57,24 @@ export default class Watchtower extends EventEmitter {
       return { host, repo, tag };
     };
 
-    this.setBusy = () => { this.busy = true; };
+    this.setBusy = async () => {
+      await this.waitForBusy();
+      this.busy = true;
+    };
     this.clearBusy = () => { this.busy = false; };
     this.waitForBusy = () => {
       return new Promise((resolve) => {
-        const waiter = setInterval(() => {
-          if (!this.busy) {
-            clearInterval(waiter);
-            resolve();
-          }
-        });
+        if (this.busy) {
+          debug('watchtower:waitForBusy')('Wait for busy...');
+          const waiter = setInterval(() => {
+            if (!this.busy) {
+              clearInterval(waiter);
+              resolve();
+            }
+          });
+        } else {
+          resolve();
+        }
       });
     };
 
@@ -46,21 +83,99 @@ export default class Watchtower extends EventEmitter {
         setTimeout(resolve, delay * 1000);
       });
     };
+
+    this.followProgress = (stream) => {
+      return new Promise((resolve, reject) => {
+        const dbg = debug('watchtower:followProgress');
+        let status;
+
+        this.docker.modem.followProgress(stream, (progressError) => {
+          /* onFinished */
+          if (progressError) {
+            reject(progressError);
+          } else {
+            resolve();
+          }
+        }, (event) => {
+          /* onProgress */
+          if (event.status && event.status !== status) {
+            status = event.status;
+            dbg(status);
+          }
+        });
+      });
+    };
+
+    this.terminate = () => {
+      if (this.forceTerminate) {
+        process.exit(0);
+      } else {
+        this.forceTerminate = true;
+        this.inactivate().then(() => {
+          process.exit(0);
+        });
+
+        setTimeout(() => {
+          console.log('Watchtower is currently busy, please wait...');
+          console.log('[ Press ^C again to force shut me down (may cause problems). ]');
+        }, 3000);
+      }
+    };
   }
 
-  addRegistry(name, auth) {
-    if (!name || !auth) return false;
-    if (!auth.serveraddress) return false;
+  /**
+   * Add docker registry authentication information.
+   *
+   * @param {String} server Registry server URL.
+   * @param {Object} auth   Authentication information:
+   * {
+   *   username: Login user name
+   *   password: Login password
+   *   auth: Base64 encoded auth credentials (Optional)
+   *   email: User email (Optional)
+   * }
+   * @return {Boolean}      Return true if success, false otherwise.
+   */
+  addRegistryAuth(server, auth) {
+    if (!server || !auth) return false;
     if (!auth.username || !auth.password) return false;
-    this.registries[name] = auth;
+    this.registryAuths[server] = auth;
+    this.registryAuths[server].serveraddress = server;
     return true;
   }
 
+  /**
+   * Activate watchtower, if `checkUpdateInterval` is set, watchtower will start
+   * polling for checking updates.
+   */
+  async activate() {
+    process.on('SIGINT', this.terminate);
+    process.on('SIGTERM', this.terminate);
+    await this.watch();
+  }
+
+  /**
+   * Inactivate watchtower. Watchtower will wait for busy before termination.
+   */
+  async inactivate() {
+    clearTimeout(this.watcher);
+    process.removeListener('SIGINT', this.terminate);
+    process.removeListener('SIGTERM', this.terminate);
+    await this.waitForBusy();
+  }
+
+  /**
+   * Check for updates.
+   */
   async checkForUpdates() {
-    if (this.config.checkUpdateInterval < 0) return;
+    const dbg = debug('watchtower:checkForUpdates');
+    if (this.configs.checkUpdateInterval < 0) return;
     if (this.busy) return;
 
-    this.setBusy();
+    dbg('Checking for updates...');
+
+    await this.setBusy();
+
     let containers = await this.docker.listContainers();
     await containers.filter((containerInfo) => {
       // Skip orphaned container (where image name equals to image ID)
@@ -69,22 +184,20 @@ export default class Watchtower extends EventEmitter {
       return curr.then(() => this.checkout(filteredContainers[index]));
     }, Promise.resolve());
 
-    this.clearBusy();
+    await this.clearBusy();
+
+    dbg('Update check finished');
   }
 
-  async activate() {
-    this.warder = setInterval(this.checkForUpdates, this.config.checkUpdateInterval * 60000);
-    await this.checkForUpdates();
-  }
-
-  async inactivate() {
-    clearInterval(this.warder);
-    await this.waitForBusy();
-  }
-
+  /**
+   * Checkout given container to see if there is any update. If yes, emit an
+   * 'updateFound' event; if no, 'updateNotFound' event is emitted.
+   *
+   * @param {Object} containerInfo Container info object to be checked out.
+   */
   async checkout(containerInfo) {
     const dbg = debug('watchtower:checkout');
-    const { host, repo, tag } = this.parseImageName(containerInfo.Image);
+    const { repo, tag } = this.parseImageName(containerInfo.Image);
     const container = await this.docker.getContainer(containerInfo.Id).inspect();
 
     /* Skip repo with reserved tags and containers which are not running */
@@ -98,12 +211,13 @@ export default class Watchtower extends EventEmitter {
 
     dbg(`2. Pull ${repo}:${tag}`);
     try {
-      await this.pull(host, repo, tag);
+      await this.pull(containerInfo.Image);
     } catch (error) {
       dbg(`2-1. Pull ${repo}:${tag} failed:`);
       dbg(error);
       dbg(`Restoring ${repo}:${tag} and skip this image`);
       await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
+      await this.docker.getImage(`${repo}:${tag}-wt-curr`).remove();
       return;
     }
 
@@ -117,7 +231,7 @@ export default class Watchtower extends EventEmitter {
     dbg(`4. Restore ${repo}:${tag}-wt-curr back to ${repo}:${tag}`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
 
-    dbg(`5. Remove ${repo}:${tag}-wt-curr  which is temporarily created`);
+    dbg(`5. Remove ${repo}:${tag}-wt-curr which is temporarily created`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).remove();
 
     dbg(`6. Compare creation date between ${repo}:${tag} and ${repo}:${tag}-wt-next`);
@@ -135,27 +249,29 @@ export default class Watchtower extends EventEmitter {
       this.emit('updateFound', containerInfo);
     } else {
       /**
-       * 7-2. If no, current image is already latest version, remove 'repo:tag-wt-next'
-       *      which is temporarily created.
+       * 7-2. If no, current image is already latest version, emit an 'updateNotFound'
+       *      event and remove 'repo:tag-wt-next' which is temporarily created.
        */
-      dbg(`7-2. ${repo}:${tag} is already up-to-date`);
+      dbg(`7-2. ${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${repo}:${tag}`);
+      this.emit('updateNotFound', containerInfo);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     }
   }
 
+  /**
+   * Apply update for given container.
+   *
+   * @param  {Object} containerInfo Container info object to be updated.
+   * @return {Promise}              A promise with the result of the update.
+   */
   async applyUpdate(containerInfo) {
     const dbg = debug('watchtower:applyUpdate');
     const { repo, tag } = this.parseImageName(containerInfo.Image);
 
-    if (this.busy) {
-      dbg('Wait for busy...');
-      await this.waitForBusy();
-    }
+    await this.setBusy();
 
     const container = await this.docker.getContainer(containerInfo.Id).inspect();
     const containerName = container.Name.replace(/^\//, '');
-
-    this.setBusy();
 
     try {
       dbg(`1. Stop container ${repo}:${tag} and rename it to avoid name conflict`);
@@ -187,12 +303,19 @@ export default class Watchtower extends EventEmitter {
       dbg(`7. Start latest container of ${repo}:${tag} image`);
       latestContainer = await latestContainer.start();
 
-      dbg(`8. Waiting ${this.config.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
-      await this.waitForDelay(this.config.timeToWaitBeforeHealthyCheck);
+      dbg(`8. Waiting ${this.configs.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
+      await this.waitForDelay(this.configs.timeToWaitBeforeHealthyCheck);
       const lastestContainerInfo = await latestContainer.inspect();
 
       dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(lastestContainerInfo.State, null, 2)}`);
-      if (lastestContainerInfo.State.Running) {
+      if (!lastestContainerInfo.State.Running) {
+        dbg(`Remove failed ${repo}:${tag} container and its image`);
+        await this.docker.getContainer(lastestContainerInfo.Id).remove();
+        await this.docker.getImage(`${repo}:${tag}`).remove();
+        await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
+
+        throw new Error('Start container failed');
+      } else {
         dbg(`9-1. Latest ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
@@ -201,17 +324,10 @@ export default class Watchtower extends EventEmitter {
         await this.docker.getContainer(containerInfo.Id).remove();
 
         dbg(`9-3. Update ${repo}:${tag} successfully`);
-        this.clearBusy();
+        await this.clearBusy();
 
-        /* Emit an 'updated' event with latest running container */
-        this.emit('updateApplied', lastestContainerInfo);
-      } else {
-        dbg(`Remove failed ${repo}:${tag} container and its image`);
-        await this.docker.getContainer(lastestContainerInfo.Id).remove();
-        await this.docker.getImage(`${repo}:${tag}`).remove();
-        await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
-
-        throw new Error('Start container failed');
+        /* Apply successfully, return latest running container */
+        return Promise.resolve(lastestContainerInfo);
       }
     } catch (error) {
       if (error.message !== 'Start container failed') {
@@ -231,79 +347,102 @@ export default class Watchtower extends EventEmitter {
 
       dbg(`Update ${repo}:${tag} failed`);
 
-      this.clearBusy();
-      this.emit('error', {
-        action: 'update',
+      await this.clearBusy();
+
+      return Promise.reject({
         message: error.message,
         container: containerInfo,
       });
     }
   }
 
-  pull(host, repo, tag) {
-    return new Promise((resolve, reject) => {
-      const dbg = debug('watchtower:pull');
+  /**
+   * Pull latest image with given name.
+   *
+   * @param  {String} name Image name to pull.
+   * @return {Promise}     A promise with the result of pull.
+   */
+  async pull(name) {
+    const dbg = debug('watchtower:pull');
+    const { host } = this.parseImageName(name);
+    const options = { authconfig: this.registryAuths[host] };
 
-      this.docker.pull(`${repo}:${tag}`, { authconfig: this.registries[host] }, (pullError, stream) => {
-        dbg(`Pulling ${repo}:${tag}`);
+    dbg(`Pulling ${name}`);
 
-        if (pullError) {
-          dbg(`Error occurred while pulling ${repo}:${tag}:`);
-          dbg(pullError);
-          reject();
-          return;
-        }
-
-        this.docker.modem.followProgress(stream, (progressError) => {
-          /* onFinished */
-          if (progressError) {
-            dbg(`Error occurred while pulling ${repo}:${tag}:`);
-            dbg(progressError);
-            reject();
-          } else {
-            resolve();
-          }
-        }, (event) => {
-          /* onProgress */
-          if (event.status.startsWith('Status:')) {
-            dbg(event.status);
-          }
-        });
+    let pullStream = await new Promise((resolve, reject) => {
+      this.docker.pull(`${name}`, options, (error, stream) => {
+        if (error) reject(error);
+        else resolve(stream);
       });
     });
+    await this.followProgress(pullStream);
+
+    dbg(`Image ${name} pulled`);
   }
 
+  /**
+   * Push image to the registry serever.
+   *
+   * @param  {String} name Image name to push.
+   * @return {Promise}     A promise with the result of push.
+   */
   async push(name) {
     const dbg = debug('watchtower:push');
-    const { host, repo, tag } = this.parseImageName(name);
-    const image = await this.docker.getImage(`${repo}:${tag}`);
+    const { host } = this.parseImageName(name);
+    const options = { authconfig: this.registryAuths[host] };
 
     dbg(`Pushing image ${name}...`);
 
-    if (this.busy) {
-      dbg('Wait for busy...');
-      await this.waitForBusy();
-    }
-    this.setBusy();
-    await image.push({ authconfig: this.registries[host] });
-    this.clearBusy();
+    await this.setBusy();
+    let stream = await this.docker.getImage(`${name}`).push(options);
+    await this.followProgress(stream);
+    await this.clearBusy();
 
     dbg(`Image ${name} pushed`);
   }
 
-  async loadImage(fileStream) {
-    const dbg = debug('watchtower:loadImage');
+  /**
+   * Load image from a gzipped tarball file or a stream.
+   *
+   * @param  {String|Stream} src Image data source, can be path of a '.tar.gz' file or a Readable stream.
+   * @return {Array}             Repo tags of the image.
+   */
+  async load(src) {
+    const dbg = debug('watchtower:load');
+    let extractor = new ManifestExtractor();
+    let stream;
+    let repoTags;
 
-    dbg(`Loading image file ${fileStream.path}...`);
+    if (typeof src === 'string') {
+      extractor.on('manifests', (manifests) => {
+        if (manifests.length > 0 && manifests[0].RepoTags) {
+          repoTags = manifests[0].RepoTags;
+          dbg('Found RepoTags:', repoTags);
+        }
+      });
 
-    if (this.busy) {
-      dbg('Wait for busy...');
-      await this.waitForBusy();
+      stream = fs.createReadStream(src)
+                 .pipe(zlib.createGunzip())
+                 .pipe(extractor);
+    } else if (src instanceof Readable) {
+      stream = src;
+    } else {
+      const error = 'Unsupported type of image source';
+      dbg(error);
+      extractor.removeAllListeners();
+      return Promise.reject(error);
     }
-    this.setBusy();
-    await this.docker.loadImage(fileStream, {});
-    this.clearBusy();
 
-    dbg(`Image file ${fileStream.path} loaded`);
+    dbg(`Loading image ${stream.path || 'from Readable stream'}...`);
+
+    await this.setBusy();
+    await this.docker.loadImage(stream, {});
+    extractor.removeAllListeners();
+    await this.clearBusy();
+
+    dbg(`Image ${stream.path || 'stream'} loaded`);
+
+    if (!repoTags) return Promise.reject('No RepoTags found');
+    return Promise.resolve(repoTags);
   }
 }
