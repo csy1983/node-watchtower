@@ -1,5 +1,5 @@
 # node-watchtower
-A docker image updater inspired by v2tec/watchtower (https://github.com/v2tec/watchtower), implemented by Node.js.
+A docker image updater inspired by [v2tec/watchtower](https://github.com/v2tec/watchtower), implemented by Node.js.
 
 ## Features
 - Auto check if there is image update for each running container periodically.
