@@ -19,11 +19,11 @@ import Watchtower from 'node-watchtower';
 
 /* Create a watchtower instance */
 const watchtower = new Watchtower({
-  checkUpdateInterval: 180, /* 3 mins, set to 0 to disable update check */
+  checkUpdateInterval: 180, /* 3 mins, set to 0 to disable polling update check */
   timeToWaitBeforeHealthyCheck: 10, /* 10 seconds to wait for the updated container to start */
 });
 
-/* Add your own private registry server */
+/* Add your own private registry server if you want to pull/push images from it */
 watchtower.addRegistryAuth('your.own.server:5000', {
   username: 'csy',
   password: 'chardi',
@@ -41,7 +41,7 @@ watchtower.on('updateFound', (containerInfo) => {
   });
 });
 
-/* Activate the watchtower. This will start checking updates for every 3 mins */
+/* Activate the watchtower. This will start checking updates every 3 mins */
 watchtower.activate();
 
 /* Load docker image from a file */

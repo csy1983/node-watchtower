@@ -8,6 +8,8 @@ import url from 'url';
 import zlib from 'zlib';
 import ManifestExtractor from './extractor';
 
+const DEFAULT_WATCHTOWER_LABEL = 'tw.chardi.watchtower';
+
 /**
  * @class Watchtower
  * @constructor
@@ -19,9 +21,18 @@ export default class Watchtower extends EventEmitter {
    * Constructor
    * @param {Object} configs Watchtower configurations:
    * {
-   *   checkUpdateInterval: Polling interval for checking images updates. Polling is disabled while setting to <= 0. [Default: 180][Unit: second]
-   *   timeToWaitBeforeHealthyCheck: Time to wait for updated container to start before checking its healthy. [Default: 30][Unit: second]
-   *   dockerOptions: Options for creating dockerode instance. [Default: undefined]
+   *   checkUpdateInterval: {Number} [Default: 180][Unit: second]
+   *     - Polling interval for checking images updates.
+   *     - Polling is disabled while setting to <= 0.
+   *   timeToWaitBeforeHealthyCheck: {Number} [Default: 30][Unit: second]
+   *     - Time to wait for updated container to start before checking its healthy.
+   *   dockerOptions: {Object} [Default: undefined]
+   *     - Options for creating dockerode instance.
+   *     - Refer to https://github.com/apocas/dockerode
+   *   label: {String}[Default: tw.chardi.watchtower]
+   *     - Watchtower label of docker container.
+   *     - Used to indicate that the container to be updated is watchtower itself. (see isWatchtower method).
+   *     - We need this because the process of updating watchtower is different (see applyUpdate method).
    * }
    */
   constructor(configs = {}) {
@@ -33,6 +44,7 @@ export default class Watchtower extends EventEmitter {
     };
     this.docker = new Docker(this.configs.dockerOptions);
     this.manifestExtractor = new ManifestExtractor();
+    this.label = this.configs.label || DEFAULT_WATCHTOWER_LABEL;
     this.registryAuths = {};
     this.busy = false;
     this.forceTerminate = false;
@@ -132,6 +144,15 @@ export default class Watchtower extends EventEmitter {
   }
 
   /**
+   * Check if given container is watchtower.
+   * @param  {Object}  containerInfo Container info returned by container.inspect().
+   * @return {Boolean}
+   */
+  isWatchtower(containerInfo) {
+    return containerInfo.Config.Labels[this.label];
+  }
+
+  /**
    * Add docker registry authentication information.
    *
    * @param {String} server Registry server URL.
@@ -194,9 +215,9 @@ export default class Watchtower extends EventEmitter {
     await this.setBusy();
 
     let containers = await this.docker.listContainers();
-    await containers.filter((containerInfo) => {
-      // Skip orphaned container (where image name equals to image ID)
-      return (containerInfo.Image !== containerInfo.ImageID);
+    await containers.filter((containerBrief) => {
+      // Skip orphaned container who's image name equals to image ID
+      return (containerBrief.Image !== containerBrief.ImageID);
     }).reduce((curr, next, index, filteredContainers) => {
       return curr.then(() => this.checkout(filteredContainers[index]));
     }, Promise.resolve());
@@ -207,28 +228,28 @@ export default class Watchtower extends EventEmitter {
   }
 
   /**
-   * Checkout given container to see if there is any update. If yes, emit an
-   * 'updateFound' event; if no, 'updateNotFound' event is emitted.
+   * Checkout given container to see if there is any update.
+   * If yes, emit an 'updateFound' event;
+   * Otherwise, 'updateNotFound' event is emitted.
    *
-   * @param {Object} containerInfo Container info object to be checked out.
+   * @param {Object} containerBrief Container brief object returned by listContainers().
    */
-  async checkout(containerInfo) {
+  async checkout(containerBrief) {
     const dbg = debug('watchtower:checkout');
-    const { repo, tag } = this.parseImageName(containerInfo.Image);
-    const container = await this.docker.getContainer(containerInfo.Id).inspect();
+    const { repo, tag } = this.parseImageName(containerBrief.Image);
+    const containerInfo = await this.docker.getContainer(containerBrief.Id).inspect();
 
     /* Skip repo with reserved tags and containers which are not running */
-    if (tag.match(/.*-wt-curr$/) ||
-        tag.match(/.*-wt-next$/) ||
-        tag.match(/.*-wt-prev$/) ||
-        !container.State.Running) return;
+    if (tag.match(/.*-wt-(curr|next|prev)$/) || !containerInfo.State.Running) {
+      return;
+    }
 
     dbg(`1. Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-curr` });
 
     dbg(`2. Pull ${repo}:${tag}`);
     try {
-      await this.pull(containerInfo.Image);
+      await this.pull(containerInfo.Config.Image);
     } catch (error) {
       dbg(`2-1. Pull ${repo}:${tag} failed:`);
       dbg(error);
@@ -258,7 +279,7 @@ export default class Watchtower extends EventEmitter {
     dbg(`7. current = ${curr.Created}, next = ${next.Created}`);
     if (curr.Created < next.Created) {
       /**
-       * 7-1. If yes, emit an 'updateFound' event with container info to client to
+       * 7-1. Yes, emit an 'updateFound' event with container info to client to
        *      notify that there is an new image to update, and keep 'repo:tag-wt-next'
        *      until client has decided to apply the update or not.
        */
@@ -266,7 +287,7 @@ export default class Watchtower extends EventEmitter {
       this.emit('updateFound', containerInfo);
     } else {
       /**
-       * 7-2. If no, current image is already latest version, emit an 'updateNotFound'
+       * 7-2. No, current image is already latest version, emit an 'updateNotFound'
        *      event and remove 'repo:tag-wt-next' which is temporarily created.
        */
       dbg(`7-2. ${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${repo}:${tag}`);
@@ -278,26 +299,31 @@ export default class Watchtower extends EventEmitter {
   /**
    * Apply update for given container.
    *
-   * @param  {Object} containerInfo Container info object to be updated.
+   * @param  {Object} containerInfo Container object to be updated returned by inspect().
    * @return {Promise}              A promise with the result of the update.
    */
   async applyUpdate(containerInfo) {
     const dbg = debug('watchtower:applyUpdate');
-    const { repo, tag } = this.parseImageName(containerInfo.Image);
+    const { repo, tag } = this.parseImageName(containerInfo.Config.Image);
+    const containerName = containerInfo.Name.replace(/^\//, '');
 
     await this.setBusy();
 
-    const container = await this.docker.getContainer(containerInfo.Id).inspect();
-    const containerName = container.Name.replace(/^\//, '');
-
     try {
-      dbg(`1. Stop container ${repo}:${tag} and rename it to avoid name conflict`);
-      await this.docker.getContainer(containerInfo.Id).stop();
+      dbg(`1. Rename ${repo}:${tag} container to avoid name conflict`);
       await this.docker.getContainer(containerInfo.Id).rename({
         _query: { name: `${containerName}-${Date.now()}` },
       });
 
-      dbg(`2. Tag old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
+      if (!this.isWatchtower(containerInfo)) {
+        dbg(`1.1 Stop ${repo}:${tag} container`);
+        await this.docker.getContainer(containerInfo.Id).stop();
+      } else {
+        dbg(`1.2 ${repo}:${tag} is a watchtower container, I'm going to update myself`);
+        dbg('But I won\'t stop and will keep working until the new one is up and running');
+      }
+
+      dbg(`2. Backup old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
       await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-prev` });
 
       dbg(`3. Remove old ${repo}:${tag} image`);
@@ -306,45 +332,50 @@ export default class Watchtower extends EventEmitter {
       dbg(`4. Tag image ${repo}:${tag}-wt-next to ${repo}:${tag}`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).tag({ repo, tag });
 
-      dbg(`5. Update 'create options' of container ${repo}:${tag} with latest options`);
-      const latestImage = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
-      const createOptions = container.Config;
+      dbg(`5. Update 'create options' of container ${repo}:${tag} with new options`);
+      const updatedImage = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
+      const createOptions = containerInfo.Config;
       createOptions._query = { name: containerName };
-      createOptions.Env = latestImage.Config.Env;
-      createOptions.Entrypoint = latestImage.Config.Entrypoint;
-      createOptions.HostConfig = container.HostConfig;
+      createOptions.Env = updatedImage.Config.Env;
+      createOptions.Entrypoint = updatedImage.Config.Entrypoint;
+      createOptions.HostConfig = containerInfo.HostConfig;
 
-      dbg(`6. Create latest container of ${repo}:${tag} image`);
-      let latestContainer = await this.docker.createContainer(createOptions);
+      dbg(`6. Create updated container of ${repo}:${tag} image`);
+      let updatedContainer = await this.docker.createContainer(createOptions);
 
-      dbg(`7. Start latest container of ${repo}:${tag} image`);
-      latestContainer = await latestContainer.start();
+      dbg(`7. Start updated container of ${repo}:${tag} image`);
+      updatedContainer = await updatedContainer.start();
 
       dbg(`8. Waiting ${this.configs.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
       await this.waitForDelay(this.configs.timeToWaitBeforeHealthyCheck);
-      const lastestContainerInfo = await latestContainer.inspect();
 
-      dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(lastestContainerInfo.State, null, 2)}`);
-      if (!lastestContainerInfo.State.Running) {
+      const updatedContainerInfo = await updatedContainer.inspect();
+      dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(updatedContainerInfo.State, null, 2)}`);
+      if (!updatedContainerInfo.State.Running) {
         dbg(`Remove failed ${repo}:${tag} container and its image`);
-        await this.docker.getContainer(lastestContainerInfo.Id).remove();
+        await this.docker.getContainer(updatedContainerInfo.Id).remove();
         await this.docker.getImage(`${repo}:${tag}`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
 
         throw new Error('Start container failed');
       } else {
-        dbg(`9-1. Latest ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
+        dbg(`9-1. Updated container of ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
 
-        dbg(`9-2. Remove previous ${repo}:${tag} container`);
+        if (this.isWatchtower(containerInfo)) {
+          dbg('9-2. We are going to apply updated watchtower container, stop the old one');
+          await this.docker.getContainer(containerInfo.Id).stop();
+        }
+
+        dbg(`9-3. Remove previous ${repo}:${tag} container`);
         await this.docker.getContainer(containerInfo.Id).remove();
 
-        dbg(`9-3. Update ${repo}:${tag} successfully`);
+        dbg(`9-4. Update ${repo}:${tag} successfully`);
         await this.clearBusy();
 
-        /* Apply successfully, return latest running container */
-        return Promise.resolve(lastestContainerInfo);
+        /* Apply successfully, return updated container info */
+        return Promise.resolve(updatedContainerInfo);
       }
     } catch (error) {
       if (error.message !== 'Start container failed') {
@@ -353,7 +384,7 @@ export default class Watchtower extends EventEmitter {
       }
 
       try {
-        dbg(`Latest ${repo}:${tag} failed to start, fall back to previous version`);
+        dbg(`Failed to start updated container of ${repo}:${tag}, fall back to previous version`);
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).tag({ repo, tag });
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
       } catch (skip) {}
@@ -368,7 +399,7 @@ export default class Watchtower extends EventEmitter {
 
       return Promise.reject({
         message: error.message,
-        container: containerInfo,
+        containerInfo,
       });
     }
   }
