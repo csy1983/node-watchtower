@@ -2,7 +2,7 @@
 A docker image updater inspired by [v2tec/watchtower](https://github.com/v2tec/watchtower), implemented by Node.js.
 
 ## Features
-- Check if the image of the running container is updated periodically.
+- Periodically check if the image of each running container is updated.
 - You decide whether to apply the updated image or not.
 - Fall back to previous working version if the updated container is failed to start.
 - Load local image from a gzipped tarball file or from a Readable stream.
@@ -65,8 +65,8 @@ watchtower.inactivate().then(() => {
 
 ```
 
-### Run as web service
-Refer to [express-watchtower](https://github.com/csy1983/express-watchtower).
+### Run watchtower container as a web server
+Refer to [docker-watchtower](https://github.com/csy1983/docker-watchtower).
 
 ## TBD
 - Push image to docker hub is not tested yet.
