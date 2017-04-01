@@ -1,3 +1,4 @@
+const path = require('path');
 const nodeExternals = require('webpack-node-externals');
 
 module.exports = {
@@ -12,7 +13,7 @@ module.exports = {
     ],
   },
   output: {
-    path: './dist',
+    path: path.resolve(__dirname, 'dist'),
     filename: 'index.js',
     libraryTarget: 'umd',
   },
