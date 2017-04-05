@@ -66,7 +66,7 @@ watchtower.inactivate().then(() => {
 ```
 
 ### Run watchtower container as a web server
-Refer to [docker-watchtower](https://github.com/csy1983/docker-watchtower).
+Checkout [docker-watchtower](https://github.com/csy1983/docker-watchtower).
 
 ## TBD
-- Push image to docker hub is not tested yet.
+- Push image to docker hub is not tested.

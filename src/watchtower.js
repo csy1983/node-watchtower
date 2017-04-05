@@ -46,6 +46,7 @@ export default class Watchtower extends EventEmitter {
     this.manifestExtractor = new ManifestExtractor();
     this.label = this.configs.label || DEFAULT_WATCHTOWER_LABEL;
     this.registryAuths = {};
+    this.availableUpdates = {};
     this.busy = false;
     this.forceTerminate = false;
 
@@ -194,12 +195,28 @@ export default class Watchtower extends EventEmitter {
   }
 
   /**
-   * Set interval for update check in second.
+   * Update watchtower configs.
+   *
+   * @param {Object} configs Configuration object:
+   * {
+   *   checkUpdateInterval: {Number} [Default: 180][Unit: second]
+   *   timeToWaitBeforeHealthyCheck: {Number} [Default: 30][Unit: second]
+   * }
    */
-  setCheckUpdateInterval(second) {
-    this.configs.checkUpdateInterval = second;
+  updateConfig(configs) {
+    this.configs.checkUpdateInterval = configs.checkUpdateInterval;
+    this.configs.timeToWaitBeforeHealthyCheck = configs.timeToWaitBeforeHealthyCheck;
     this.unwatch();
     this.watch();
+  }
+
+  /**
+   * Get available updates for given image name.
+   *
+   * @param {String} image Image name
+   */
+  getAvailableUpdates(image) {
+    return this.availableUpdates[image];
   }
 
   /**
@@ -279,18 +296,37 @@ export default class Watchtower extends EventEmitter {
     dbg(`7. current = ${curr.Created}, next = ${next.Created}`);
     if (curr.Created < next.Created) {
       /**
-       * 7-1. Yes, emit an 'updateFound' event with container info to client to
-       *      notify that there is an new image to update, and keep 'repo:tag-wt-next'
+       * 7-1. Yes, but check if this one is not previous failed one, if yes then skip it.
+       */
+      try {
+        const fail = await this.docker.getImage(`${repo}:${tag}-wt-fail`).inspect();
+        if (fail && (fail.Id === next.Id)) {
+          dbg('7-1. This image had failed before, skip it');
+          return;
+        } else if (fail) {
+          /* We have a new image to update, remove old failed one */
+          await this.docker.getImage(`${repo}:${tag}-wt-fail`).remove();
+        }
+      } catch (skip) {}
+
+      /**
+       * 7-2. Save the container info to availableUpdates object and emit
+       *      an 'updateFound' event with the container info to client to notify
+       *      users that there is an image update, and keep 'repo:tag-wt-next'
        *      until client has decided to apply the update or not.
        */
-      dbg(`7-1. Emit 'updateFound' event for ${repo}:${tag}`);
+      dbg(`7-1. Emit 'updateFound' event for ${containerInfo.Config.Image}`);
+      this.availableUpdates[containerInfo.Config.Image] = containerInfo;
       this.emit('updateFound', containerInfo);
     } else {
       /**
        * 7-2. No, current image is already latest version, emit an 'updateNotFound'
        *      event and remove 'repo:tag-wt-next' which is temporarily created.
        */
-      dbg(`7-2. ${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${repo}:${tag}`);
+      dbg(`7-2. ${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${containerInfo.Config.Image}`);
+      if (this.availableUpdates[containerInfo.Config.Image]) {
+        delete this.availableUpdates[containerInfo.Config.Image];
+      }
       this.emit('updateNotFound', containerInfo);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     }
@@ -351,17 +387,11 @@ export default class Watchtower extends EventEmitter {
 
       const updatedContainerInfo = await updatedContainer.inspect();
       dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(updatedContainerInfo.State, null, 2)}`);
-      if (!updatedContainerInfo.State.Running) {
-        dbg(`Remove failed ${repo}:${tag} container and its image`);
-        await this.docker.getContainer(updatedContainerInfo.Id).remove();
-        await this.docker.getImage(`${repo}:${tag}`).remove();
-        await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
-
-        throw new Error('Start container failed');
-      } else {
+      if (updatedContainerInfo.State.Running) {
         dbg(`9-1. Updated container of ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
+        delete this.availableUpdates[containerInfo.Config.Image];
 
         if (this.isWatchtower(containerInfo)) {
           dbg('9-2. We are going to apply updated watchtower container, stop the old one');
@@ -377,6 +407,20 @@ export default class Watchtower extends EventEmitter {
         /* Apply successfully, return updated container info */
         return Promise.resolve(updatedContainerInfo);
       }
+
+      /* Apply failed, clean the mess up and throw an error to fall back */
+      dbg(`Tag failed ${repo}:${tag} image with '-wt-fail' postfix`);
+      try {
+        await this.docker.getImage(`${repo}:${tag}-wt-fail`).remove();
+      } catch (skip) {}
+      await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-fail` });
+
+      dbg(`Remove failed ${repo}:${tag} container and its image`);
+      await this.docker.getContainer(updatedContainerInfo.Id).remove();
+      await this.docker.getImage(`${repo}:${tag}`).remove();
+      await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
+
+      throw new Error('Start container failed');
     } catch (error) {
       if (error.message !== 'Start container failed') {
         dbg('Unexpected error:');
@@ -412,13 +456,13 @@ export default class Watchtower extends EventEmitter {
    */
   async pull(name) {
     const dbg = debug('watchtower:pull');
-    const { host } = this.parseImageName(name);
+    const { host, repo, tag } = this.parseImageName(name);
     const options = { authconfig: this.registryAuths[host] };
 
     dbg(`Pulling ${name}`);
 
     let pullStream = await new Promise((resolve, reject) => {
-      this.docker.pull(`${name}`, options, (error, stream) => {
+      this.docker.pull(`${repo}:${tag}`, options, (error, stream) => {
         if (error) reject(error);
         else resolve(stream);
       });
