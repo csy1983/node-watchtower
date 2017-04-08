@@ -213,9 +213,11 @@ export default class Watchtower extends EventEmitter {
   /**
    * Get available updates for given image name.
    *
-   * @param {String} image Image name
+   * @param  {String} image Image name
+   * @return {Object}       Container info object
    */
   getAvailableUpdates(image) {
+    if (!image) return null;
     return this.availableUpdates[image];
   }
 
@@ -317,7 +319,7 @@ export default class Watchtower extends EventEmitter {
        */
       dbg(`7-1. Emit 'updateFound' event for ${containerInfo.Config.Image}`);
       this.availableUpdates[containerInfo.Config.Image] = containerInfo;
-      this.emit('updateFound', containerInfo);
+      this.emit('updateFound', containerInfo.Config.Image);
     } else {
       /**
        * 7-2. No, current image is already latest version, emit an 'updateNotFound'
@@ -327,7 +329,7 @@ export default class Watchtower extends EventEmitter {
       if (this.availableUpdates[containerInfo.Config.Image]) {
         delete this.availableUpdates[containerInfo.Config.Image];
       }
-      this.emit('updateNotFound', containerInfo);
+      this.emit('updateNotFound', containerInfo.Config.Image);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     }
   }
@@ -496,10 +498,14 @@ export default class Watchtower extends EventEmitter {
   /**
    * Load image from a gzipped tarball file or a stream.
    *
-   * @param  {String|Stream} src Image data source, can be path of a '.tar.gz' file or a Readable stream.
-   * @return {Array}             Repo tags of the image.
+   * @param  {String|Stream} src     Image data source, can be path of a '.tar.gz' file or a Readable stream.
+   * @param  {Object}        options Options available:
+   * {
+   *   tagToLatest: {Boolean} [Default: false] Tag image to latest and remove original tag.
+   * }
+   * @return {Array}                 Repo tags of the image.
    */
-  async load(src) {
+  async load(src, options = {}) {
     const dbg = debug('watchtower:load');
     let extractor = new ManifestExtractor();
     let stream;
@@ -530,6 +536,14 @@ export default class Watchtower extends EventEmitter {
     await this.setBusy();
     await this.docker.loadImage(stream, {});
     extractor.removeAllListeners();
+
+    if (options.tagToLatest && repoTags) {
+      const { repo } = this.parseImageName(repoTags[0]);
+      await this.docker.getImage(repoTags).tag({ repo, tag: 'latest' });
+      await this.docker.getImage(repoTags).remove();
+      repoTags.unshift(`${repo}:latest`);
+    }
+
     await this.clearBusy();
 
     dbg(`Image ${stream.path || 'stream'} loaded`);

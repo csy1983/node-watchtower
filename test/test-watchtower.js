@@ -15,7 +15,7 @@ const testAuth = ['csy-mbp:5000', {
 const TEST_REPO_LATEST = 'alpine';
 const TEST_REPO_OLD = 'alpine:3.4';
 const TEST_PRIVATE_IMAGE = 'alpine-3.5';
-const TEST_PRIVATE_IMAGE_REPO = 'csy-mbp:5000/alpine:3.5';
+const TEST_PRIVATE_IMAGE_REPO = 'csy-mbp:5000/alpine';
 
 describe('Prepare Test', function() {
   this.timeout(60000);
@@ -57,11 +57,11 @@ describe('Watchtower', function() {
     timeToWaitBeforeHealthyCheck: 10,
   });
 
-  watchtower.on('updateFound', (containerInfo) => {
+  watchtower.on('updateFound', (image) => {
     describe('[Event] updateFound', function() {
       it('should receive an event with containerInfo', function(done) {
-        if (containerInfo) done();
-        else done('No container info');
+        if (image) done();
+        else done('Got \'updateFound\' event but no image name');
       });
     });
   });
@@ -106,10 +106,12 @@ describe('Watchtower', function() {
     it(`should load ${TEST_PRIVATE_IMAGE} image`, function(done) {
       this.timeout(60000);
 
-      watchtower.load(`./test/images/${TEST_PRIVATE_IMAGE}.tar.gz`).then((result) => {
-        repoTags = result;
-        done();
-      }).catch(done);
+      watchtower.load(`./test/images/${TEST_PRIVATE_IMAGE}.tar.gz`, { tagToLatest: true })
+        .then((result) => {
+          repoTags = result;
+          done();
+        })
+        .catch(done);
     });
   });
 
