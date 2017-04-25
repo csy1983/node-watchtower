@@ -1,0 +1,7 @@
+image: csy-mbp:5000/alpine
+container_name: private-alpine-for-test
+privileged: true
+network_mode: host
+command: ping www.yahoo.com
+volumes:
+  - /tmp:/tmp

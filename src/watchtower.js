@@ -3,6 +3,7 @@ import Docker from 'dockerode';
 import debug from 'debug';
 import EventEmitter from 'events';
 import fs from 'fs';
+import os from 'os';
 import { Readable } from 'stream';
 import url from 'url';
 import zlib from 'zlib';
@@ -26,6 +27,8 @@ export default class Watchtower extends EventEmitter {
    *     - Polling is disabled while setting to <= 0.
    *   timeToWaitBeforeHealthyCheck: {Number} [Default: 30][Unit: second]
    *     - Time to wait for updated container to start before checking its healthy.
+   *   pruneImages: {Boolean} [Default: false]
+   *     - Delete unused images during activation.
    *   dockerOptions: {Object} [Default: undefined]
    *     - Options for creating dockerode instance.
    *     - Refer to https://github.com/apocas/dockerode
@@ -156,31 +159,34 @@ export default class Watchtower extends EventEmitter {
   /**
    * Add docker registry authentication information.
    *
-   * @param {String} server Registry server URL.
-   * @param {Object} auth   Authentication information:
+   * @param {Object} serverAuth Server authentication information:
    * {
+   *   serveraddress: Server URL
    *   username: Login user name
    *   password: Login password
    *   auth: Base64 encoded auth credentials (Optional)
    *   email: User email (Optional)
    * }
-   * @return {Boolean}      Return true if success, false otherwise.
+   * @return {Boolean}          Return true if success, false otherwise.
    */
-  addRegistryAuth(server, auth) {
-    if (!server || !auth) return false;
-    if (!auth.username || !auth.password) return false;
-    this.registryAuths[server] = auth;
-    this.registryAuths[server].serveraddress = server;
+  addRegistryAuth(serverAuth) {
+    if (!serverAuth || !serverAuth.serveraddress) return false;
+    if (!serverAuth.auth && (!serverAuth.username || !serverAuth.password)) return false;
+    this.registryAuths[serverAuth.serveraddress] = serverAuth;
     return true;
   }
 
   /**
    * Activate watchtower, if `checkUpdateInterval` is set, watchtower will start
-   * polling for checking updates.
+   * polling for checking updates. This will also delete all unused images if
+   * `pruneImages` is set.
    */
   async activate() {
     process.on('SIGINT', this.terminate);
     process.on('SIGTERM', this.terminate);
+    if (this.configs.pruneImages) {
+      await this.pruneImages();
+    }
     await this.watch();
   }
 
@@ -202,12 +208,26 @@ export default class Watchtower extends EventEmitter {
    *   checkUpdateInterval: {Number} [Default: 180][Unit: second]
    *   timeToWaitBeforeHealthyCheck: {Number} [Default: 30][Unit: second]
    * }
+   * @return {Number}        Error number
    */
   updateConfig(configs) {
-    this.configs.checkUpdateInterval = configs.checkUpdateInterval;
-    this.configs.timeToWaitBeforeHealthyCheck = configs.timeToWaitBeforeHealthyCheck;
+    const dbg = debug('watchtower:updateConfig');
+    dbg(configs);
+
+    if (configs.checkUpdateInterval) {
+      if (isNaN(configs.checkUpdateInterval)) return -1;
+      this.configs.checkUpdateInterval = configs.checkUpdateInterval;
+    }
+
+    if (configs.timeToWaitBeforeHealthyCheck) {
+      if (isNaN(configs.timeToWaitBeforeHealthyCheck)) return -1;
+      this.configs.timeToWaitBeforeHealthyCheck = configs.timeToWaitBeforeHealthyCheck;
+    }
+
     this.unwatch();
     this.watch();
+
+    return 0;
   }
 
   /**
@@ -216,7 +236,7 @@ export default class Watchtower extends EventEmitter {
    * @param  {String} image Image name
    * @return {Object}       Container info object
    */
-  getAvailableUpdates(image) {
+  getAvailableUpdate(image) {
     if (!image) return null;
     return this.availableUpdates[image];
   }
@@ -263,14 +283,14 @@ export default class Watchtower extends EventEmitter {
       return;
     }
 
-    dbg(`1. Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
+    dbg(`Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-curr` });
 
-    dbg(`2. Pull ${repo}:${tag}`);
+    dbg(`Pull ${repo}:${tag}`);
     try {
       await this.pull(containerInfo.Config.Image);
     } catch (error) {
-      dbg(`2-1. Pull ${repo}:${tag} failed:`);
+      dbg(`Pull ${repo}:${tag} failed:`);
       dbg(error);
       dbg(`Restoring ${repo}:${tag} and skip this image`);
       await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
@@ -278,32 +298,30 @@ export default class Watchtower extends EventEmitter {
       return;
     }
 
-    dbg(`3. Tag ${repo}:${tag} to ${repo}:${tag}-wt-next`);
+    dbg(`Tag ${repo}:${tag} to ${repo}:${tag}-wt-next`);
     try {
-      dbg(`3-1. If tag ${repo}:${tag}-wt-next is already exists, then remove it first.`);
+      dbg(`If tag ${repo}:${tag}-wt-next is already exists, then remove it first.`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
     } catch (error) {}
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-next` });
 
-    dbg(`4. Restore ${repo}:${tag}-wt-curr back to ${repo}:${tag}`);
+    dbg(`Restore ${repo}:${tag}-wt-curr back to ${repo}:${tag}`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
 
-    dbg(`5. Remove ${repo}:${tag}-wt-curr which is temporarily created`);
+    dbg(`Remove ${repo}:${tag}-wt-curr which is temporarily created`);
     await this.docker.getImage(`${repo}:${tag}-wt-curr`).remove();
 
-    dbg(`6. Compare creation date between ${repo}:${tag} and ${repo}:${tag}-wt-next`);
+    dbg(`Compare creation date between ${repo}:${tag} and ${repo}:${tag}-wt-next`);
     const curr = await this.docker.getImage(`${repo}:${tag}`).inspect();
     const next = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
 
-    dbg(`7. current = ${curr.Created}, next = ${next.Created}`);
+    dbg(`current = ${curr.Created}, next = ${next.Created}`);
     if (curr.Created < next.Created) {
-      /**
-       * 7-1. Yes, but check if this one is not previous failed one, if yes then skip it.
-       */
       try {
+        /* Check if this image is failed to apply before, if yes then skip it. */
         const fail = await this.docker.getImage(`${repo}:${tag}-wt-fail`).inspect();
         if (fail && (fail.Id === next.Id)) {
-          dbg('7-1. This image had failed before, skip it');
+          dbg('This image had failed before, skip it');
           return;
         } else if (fail) {
           /* We have a new image to update, remove old failed one */
@@ -312,20 +330,20 @@ export default class Watchtower extends EventEmitter {
       } catch (skip) {}
 
       /**
-       * 7-2. Save the container info to availableUpdates object and emit
-       *      an 'updateFound' event with the container info to client to notify
-       *      users that there is an image update, and keep 'repo:tag-wt-next'
-       *      until client has decided to apply the update or not.
+       * Save the container info to availableUpdates object and emit an
+       * 'updateFound' event with the container info to client to notify
+       * users that there is an image update, and keep 'repo:tag-wt-next'
+       * until client has decided to apply the update or not.
        */
-      dbg(`7-1. Emit 'updateFound' event for ${containerInfo.Config.Image}`);
+      dbg(`Emit 'updateFound' event for ${containerInfo.Config.Image}`);
       this.availableUpdates[containerInfo.Config.Image] = containerInfo;
       this.emit('updateFound', containerInfo.Config.Image);
     } else {
       /**
-       * 7-2. No, current image is already latest version, emit an 'updateNotFound'
-       *      event and remove 'repo:tag-wt-next' which is temporarily created.
+       * Current image is already latest version, emit an 'updateNotFound' event
+       * and remove 'repo:tag-wt-next' which is temporarily created.
        */
-      dbg(`7-2. ${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${containerInfo.Config.Image}`);
+      dbg(`${repo}:${tag} is already up-to-date, emit 'updateNotFound' event for ${containerInfo.Config.Image}`);
       if (this.availableUpdates[containerInfo.Config.Image]) {
         delete this.availableUpdates[containerInfo.Config.Image];
       }
@@ -348,62 +366,126 @@ export default class Watchtower extends EventEmitter {
     await this.setBusy();
 
     try {
-      dbg(`1. Rename ${repo}:${tag} container to avoid name conflict`);
+      dbg(`Rename ${repo}:${tag} container to avoid name conflict`);
       await this.docker.getContainer(containerInfo.Id).rename({
         _query: { name: `${containerName}-${Date.now()}` },
       });
 
       if (!this.isWatchtower(containerInfo)) {
-        dbg(`1.1 Stop ${repo}:${tag} container`);
+        dbg(`Stop ${repo}:${tag} container`);
         await this.docker.getContainer(containerInfo.Id).stop();
       } else {
-        dbg(`1.2 ${repo}:${tag} is a watchtower container, I'm going to update myself`);
+        dbg(`${repo}:${tag} is a watchtower container, I'm going to update myself`);
         dbg('But I won\'t stop and will keep working until the new one is up and running');
       }
 
-      dbg(`2. Backup old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
+      dbg(`Backup old ${repo}:${tag} to ${repo}:${tag}-wt-prev`);
       await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-prev` });
 
-      dbg(`3. Remove old ${repo}:${tag} image`);
+      dbg(`Remove old ${repo}:${tag} image`);
       await this.docker.getImage(`${repo}:${tag}`).remove();
 
-      dbg(`4. Tag image ${repo}:${tag}-wt-next to ${repo}:${tag}`);
+      dbg(`Tag image ${repo}:${tag}-wt-next to ${repo}:${tag}`);
       await this.docker.getImage(`${repo}:${tag}-wt-next`).tag({ repo, tag });
 
-      dbg(`5. Update 'create options' of container ${repo}:${tag} with new options`);
+      dbg(`Update 'create options' of container ${repo}:${tag} with new options`);
       const updatedImage = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
       const createOptions = containerInfo.Config;
+      createOptions.HostConfig = containerInfo.HostConfig;
       createOptions._query = { name: containerName };
       createOptions.Env = updatedImage.Config.Env;
       createOptions.Entrypoint = updatedImage.Config.Entrypoint;
-      createOptions.HostConfig = containerInfo.HostConfig;
 
-      dbg(`6. Create updated container of ${repo}:${tag} image`);
+      /* Overwrite container configs from docker-compose service config */
+      try {
+        const configData = updatedImage.Config.Labels['com.docker.compose.service-config'];
+        if (configData) {
+          const composeConfig = JSON.parse(configData);
+
+          if (composeConfig.container_name) {
+            createOptions._query = { name: composeConfig.container_name };
+          }
+
+          if (composeConfig.network_mode) {
+            createOptions.HostConfig.NetworkMode = composeConfig.network_mode;
+          }
+
+          if (composeConfig.privileged) {
+            createOptions.HostConfig.Privileged = true;
+          }
+
+          if (composeConfig.environment) {
+            /* Reset default environments */
+            createOptions.Env = [];
+
+            /* Set environments */
+            for (let i = 0; i < Object.keys(composeConfig.environment).length; i++) {
+              let key = Object.keys(composeConfig.environment)[i];
+              let value = composeConfig.environment(key);
+              createOptions.Env.push(`${key}=${value}`);
+            }
+          }
+
+          if (composeConfig.command) {
+            createOptions.Cmd = composeConfig.command.split(' ');
+          }
+
+          if (composeConfig.entrypoint) {
+            if (typeof composeConfig.entrypoint === 'string') {
+              createOptions.Entrypoint = composeConfig.entrypoint.split(' ');
+            } else if (Array.isArray(composeConfig.entrypoint)) {
+              createOptions.Entrypoint = composeConfig.entrypoint;
+            }
+          }
+
+          if (composeConfig.volumes && composeConfig.volumes.length > 0) {
+            /* Reset default volumes */
+            createOptions.Volumes = {};
+            createOptions.HostConfig.Binds = [];
+
+            /* Specify volumes from docker-compose config */
+            for (let i = 0; i < composeConfig.volumes.length; i++) {
+              let volume = composeConfig.volumes[i];
+              if (typeof volume === 'string') {
+                if (volume.includes(':')) {
+                  createOptions.HostConfig.Binds.push(composeConfig.volumes[i]);
+                } else {
+                  createOptions.Volumes[volume] = {};
+                }
+              } else if (typeof volume === 'object') {
+                /* TODO: To support long syntax volumes */
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      dbg(`Create updated container of ${repo}:${tag} image`);
       let updatedContainer = await this.docker.createContainer(createOptions);
 
-      dbg(`7. Start updated container of ${repo}:${tag} image`);
+      dbg(`Start updated container of ${repo}:${tag} image`);
       updatedContainer = await updatedContainer.start();
 
-      dbg(`8. Waiting ${this.configs.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
+      dbg(`Waiting ${this.configs.timeToWaitBeforeHealthyCheck} seconds for the container to start before healthy check`);
       await this.waitForDelay(this.configs.timeToWaitBeforeHealthyCheck);
 
       const updatedContainerInfo = await updatedContainer.inspect();
-      dbg(`9. ${repo}:${tag} healthy check result:\n${JSON.stringify(updatedContainerInfo.State, null, 2)}`);
+      dbg(`${repo}:${tag} healthy check result:\n${JSON.stringify(updatedContainerInfo.State, null, 2)}`);
       if (updatedContainerInfo.State.Running) {
-        dbg(`9-1. Updated container of ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
+        dbg(`Updated container of ${repo}:${tag} is up and running, remove temporary tags '${tag}-wt-next' and '${tag}-wt-prev'`);
         await this.docker.getImage(`${repo}:${tag}-wt-next`).remove();
         await this.docker.getImage(`${repo}:${tag}-wt-prev`).remove();
         delete this.availableUpdates[containerInfo.Config.Image];
 
         if (this.isWatchtower(containerInfo)) {
-          dbg('9-2. We are going to apply updated watchtower container, stop the old one');
+          dbg('We are going to apply updated watchtower container, stop the old one');
           await this.docker.getContainer(containerInfo.Id).stop();
         }
 
-        dbg(`9-3. Remove previous ${repo}:${tag} container`);
+        dbg(`Remove previous ${repo}:${tag} container`);
         await this.docker.getContainer(containerInfo.Id).remove();
 
-        dbg(`9-4. Update ${repo}:${tag} successfully`);
+        dbg(`Update ${repo}:${tag} successfully`);
         await this.clearBusy();
 
         /* Apply successfully, return updated container info */
@@ -475,28 +557,7 @@ export default class Watchtower extends EventEmitter {
   }
 
   /**
-   * Push image to the registry serever.
-   *
-   * @param  {String} name Image name to push.
-   * @return {Promise}     A promise with the result of push.
-   */
-  async push(name) {
-    const dbg = debug('watchtower:push');
-    const { host } = this.parseImageName(name);
-    const options = { authconfig: this.registryAuths[host] };
-
-    dbg(`Pushing image ${name}...`);
-
-    await this.setBusy();
-    let stream = await this.docker.getImage(`${name}`).push(options);
-    await this.followProgress(stream);
-    await this.clearBusy();
-
-    dbg(`Image ${name} pushed`);
-  }
-
-  /**
-   * Load image from a gzipped tarball file or a stream.
+   * Upoad a gzipped tarball image to the registry server.
    *
    * @param  {String|Stream} src     Image data source, can be path of a '.tar.gz' file or a Readable stream.
    * @param  {Object}        options Options available:
@@ -505,11 +566,13 @@ export default class Watchtower extends EventEmitter {
    * }
    * @return {Array}                 Repo tags of the image.
    */
-  async load(src, options = {}) {
+  async upload(src, options = {}) {
     const dbg = debug('watchtower:load');
     let extractor = new ManifestExtractor();
+    let tarpath = `${os.tmpdir()}/${Date.now()}.tar`;
     let stream;
     let repoTags;
+    let backupRunningRepoTag;
 
     if (typeof src === 'string') {
       extractor.on('manifests', (manifests) => {
@@ -520,10 +583,16 @@ export default class Watchtower extends EventEmitter {
       });
 
       stream = fs.createReadStream(src)
-                 .pipe(zlib.createGunzip())
-                 .pipe(extractor);
+        .pipe(zlib.createGunzip())
+        .pipe(extractor)
+        .pipe(fs.createWriteStream(tarpath));
     } else if (src instanceof Readable) {
       stream = src;
+      if (options.repoTag) {
+        repoTags = [options.repoTag];
+      } else {
+        return Promise.reject('You have to set options.repoTag when image source is a stream');
+      }
     } else {
       const error = 'Unsupported type of image source';
       dbg(error);
@@ -531,24 +600,89 @@ export default class Watchtower extends EventEmitter {
       return Promise.reject(error);
     }
 
-    dbg(`Loading image ${stream.path || 'from Readable stream'}...`);
+    await this.waitForDelay(3);
 
+    if (!repoTags) {
+      return Promise.reject('No RepoTags found');
+    }
+
+    dbg(`Uploading image ${stream.path || 'from Readable stream'}...`);
+
+    /* Backup image who is used by running containers */
+    let containers = await this.docker.listContainers();
+    containers.forEach((container) => {
+      for (let i = 0; i < repoTags.length; i++) {
+        let { repo, tag } = this.parseImageName(repoTags[i]);
+        let repoTag;
+
+        if (options.tagToLatest || tag === 'latest') {
+          repoTag = `${repo}`;
+        } else {
+          repoTag = `${repo}:${tag}`;
+        }
+        dbg(`Compare ${container.Image} to ${repoTag}`);
+        if (repoTag === container.Image) {
+          backupRunningRepoTag = repoTag;
+          break;
+        }
+      }
+    });
+
+    if (backupRunningRepoTag) {
+      dbg(`Backup running RepoTag: ${backupRunningRepoTag}`);
+      let { repo, tag } = this.parseImageName(backupRunningRepoTag);
+      await this.docker.getImage(backupRunningRepoTag).tag({ repo, tag: `${tag}-wt-backup` });
+    }
+
+    dbg('Loading image...');
     await this.setBusy();
-    await this.docker.loadImage(stream, {});
+    await this.docker.loadImage(fs.createReadStream(tarpath, {}));
     extractor.removeAllListeners();
+    fs.unlink(tarpath);
 
-    if (options.tagToLatest && repoTags) {
-      const { repo } = this.parseImageName(repoTags[0]);
-      await this.docker.getImage(repoTags).tag({ repo, tag: 'latest' });
-      await this.docker.getImage(repoTags).remove();
+    if (options.tagToLatest) {
+      let { repo } = this.parseImageName(repoTags[0]);
+      dbg(`Tag uploaded image ${repoTags[0]} to ${repo}:latest`);
+      await this.docker.getImage(repoTags[0]).tag({ repo, tag: 'latest' });
+      dbg(`Remove image tag ${repoTags[0]}`);
+      await this.docker.getImage(repoTags[0]).remove();
+      dbg(`Add RepoTag ${repo}:latest`);
       repoTags.unshift(`${repo}:latest`);
+    }
+
+    /* Push uploaded image */
+    let repoTag = backupRunningRepoTag || repoTags[0];
+    let { host } = this.parseImageName(repoTag);
+    let pushOptions = { authconfig: this.registryAuths[host] };
+
+    dbg(`Pushing image ${repoTag}...`);
+
+    let pushStream = await this.docker.getImage(repoTag).push(pushOptions);
+    await this.followProgress(pushStream);
+
+    dbg(`Image ${repoTag} pushed`);
+
+    /* Revert back image who is used by running container */
+    if (backupRunningRepoTag) {
+      dbg(`Revert running RepoTag: ${backupRunningRepoTag}`);
+      let { repo, tag } = this.parseImageName(backupRunningRepoTag);
+      await this.docker.getImage(`${repo}:${tag}-wt-backup`).tag({ repo, tag });
+      await this.docker.getImage(`${repo}:${tag}-wt-backup`).remove();
     }
 
     await this.clearBusy();
 
     dbg(`Image ${stream.path || 'stream'} loaded`);
 
-    if (!repoTags) return Promise.reject('No RepoTags found');
-    return Promise.resolve(repoTags);
+    return Promise.resolve(repoTag);
+  }
+
+  /**
+   * Delete unused images.
+   */
+  async pruneImages() {
+    const dbg = debug('watchtower:pruneImages');
+    const result = await this.docker.pruneImages();
+    dbg(result);
   }
 }
