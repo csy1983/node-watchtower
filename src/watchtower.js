@@ -667,13 +667,15 @@ export default class Watchtower extends EventEmitter {
     fs.unlink(tarpath);
 
     if (options.tagToLatest) {
-      let { repo } = this.parseImageName(repoTags[0]);
-      dbg(`Tag uploaded image ${repoTags[0]} to ${repo}:latest`);
-      await this.docker.getImage(repoTags[0]).tag({ repo, tag: 'latest' });
-      dbg(`Remove image tag ${repoTags[0]}`);
-      await this.docker.getImage(repoTags[0]).remove();
-      dbg(`Add RepoTag ${repo}:latest`);
-      repoTags.unshift(`${repo}:latest`);
+      let { repo, tag } = this.parseImageName(repoTags[0]);
+      if (tag !== 'latest') {
+        dbg(`Tag uploaded image ${repoTags[0]} to ${repo}:latest`);
+        await this.docker.getImage(repoTags[0]).tag({ repo, tag: 'latest' });
+        dbg(`Remove image tag ${repoTags[0]}`);
+        await this.docker.getImage(repoTags[0]).remove();
+        dbg(`Add RepoTag ${repo}:latest`);
+        repoTags.unshift(`${repo}:latest`);
+      }
     }
 
     /* Push uploaded image */
