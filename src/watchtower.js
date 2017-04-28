@@ -29,6 +29,8 @@ export default class Watchtower extends EventEmitter {
    *     - Time to wait for updated container to start before checking its healthy.
    *   pruneImages: {Boolean} [Default: false]
    *     - Delete unused images during activation.
+   *   retireOldWatchtower: {Boolean} [Default: false]
+   *     - Remove centurylink/watchtower container and image
    *   dockerOptions: {Object} [Default: undefined]
    *     - Options for creating dockerode instance.
    *     - Refer to https://github.com/apocas/dockerode
@@ -157,6 +159,25 @@ export default class Watchtower extends EventEmitter {
   }
 
   /**
+   * Retire my old friend centurylink/watchtower.
+   */
+  async retireOldWatchtower() {
+    const dbg = debug('watchtower:retireOldWatchtower');
+    let containers = await this.docker.listContainers();
+    let oldFriend = containers.find((container) => {
+      return container.Labels['com.centurylinklabs.watchtower'] &&
+        !container.Labels[DEFAULT_WATCHTOWER_LABEL];
+    });
+
+    if (oldFriend) {
+      dbg('Retiring old friend centurylink/watchtower');
+      await this.docker.getContainer(oldFriend.Id).stop();
+      await this.docker.getContainer(oldFriend.Id).remove();
+      await this.docker.getImage(oldFriend.Image).remove();
+    }
+  }
+
+  /**
    * Add docker registry authentication information.
    *
    * @param {Object} serverAuth Server authentication information:
@@ -186,6 +207,9 @@ export default class Watchtower extends EventEmitter {
     process.on('SIGTERM', this.terminate);
     if (this.configs.pruneImages) {
       await this.pruneImages();
+    }
+    if (this.configs.retireOldWatchtower) {
+      await this.retireOldWatchtower();
     }
     await this.watch();
   }
