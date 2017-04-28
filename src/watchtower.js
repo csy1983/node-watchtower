@@ -42,14 +42,16 @@ export default class Watchtower extends EventEmitter {
    */
   constructor(configs = {}) {
     super();
-    this.configs = {
-      checkUpdateInterval: configs.checkUpdateInterval || 180, /* in seconds */
-      timeToWaitBeforeHealthyCheck: configs.timeToWaitBeforeHealthyCheck || 30, /* in seconds */
-      dockerOptions: configs.dockerOptions,
-    };
+    this.configs = Object.assign({
+      /* Default configs */
+      checkUpdateInterval: 180, /* in seconds */
+      timeToWaitBeforeHealthyCheck: 30, /* in seconds */
+      pruneImages: false,
+      retireOldWatchtower: false,
+      label: DEFAULT_WATCHTOWER_LABEL,
+    }, configs);
     this.docker = new Docker(this.configs.dockerOptions);
     this.manifestExtractor = new ManifestExtractor();
-    this.label = this.configs.label || DEFAULT_WATCHTOWER_LABEL;
     this.registryAuths = {};
     this.availableUpdates = {};
     this.busy = false;
@@ -155,7 +157,7 @@ export default class Watchtower extends EventEmitter {
    * @return {Boolean}
    */
   isWatchtower(containerInfo) {
-    return containerInfo.Config.Labels[this.label];
+    return containerInfo.Config.Labels[this.configs.label];
   }
 
   /**
