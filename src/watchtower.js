@@ -70,14 +70,14 @@ export default class Watchtower extends EventEmitter {
       clearTimeout(this.watcher);
     };
 
-    this.parseImageName = (image) => {
+    this.parseImageName = (image, opts = {}) => {
       if (image.indexOf('/') < 0) image = `/${image}`;
       let comp = url.parse(`docker://${image}`);
       let host = comp.host;
-      let fullname = comp.path.split('/')[1];
+      let fullname = comp.path.split('/').splice(1).join('/');
       let repo = fullname.split(':')[0];
       let tag = fullname.split(':')[1] || 'latest';
-      if (host) repo = `${host}/${repo}`;
+      if (host && !opts.removeHostFromRepo) repo = `${host}/${repo}`;
       return { host, repo, tag };
     };
 
@@ -309,7 +309,7 @@ export default class Watchtower extends EventEmitter {
       return;
     }
 
-    dbg(`Backup ${repo}:${tag} to ${repo}:${tag}-wt-curr`);
+    dbg(`Backup ${containerBrief.Image} to ${repo}:${tag}-wt-curr`);
     await this.docker.getImage(`${repo}:${tag}`).tag({ repo, tag: `${tag}-wt-curr` });
 
     dbg(`Pull ${repo}:${tag}`);
@@ -321,6 +321,7 @@ export default class Watchtower extends EventEmitter {
       dbg(`Restoring ${repo}:${tag} and skip this image`);
       await this.docker.getImage(`${repo}:${tag}-wt-curr`).tag({ repo, tag });
       await this.docker.getImage(`${repo}:${tag}-wt-curr`).remove();
+      this.emit('updateNotFound', containerInfo.Config.Image);
       return;
     }
 
@@ -342,7 +343,7 @@ export default class Watchtower extends EventEmitter {
     const next = await this.docker.getImage(`${repo}:${tag}-wt-next`).inspect();
 
     dbg(`current = ${curr.Created}, next = ${next.Created}`);
-    if (curr.Created < next.Created) {
+    if (curr.Created !== next.Created) {
       try {
         /* Check if this image is failed to apply before, if yes then skip it. */
         const fail = await this.docker.getImage(`${repo}:${tag}-wt-fail`).inspect();
@@ -588,12 +589,14 @@ export default class Watchtower extends EventEmitter {
    * @param  {String|Stream} src     Image data source, can be path of a '.tar.gz' file or a Readable stream.
    * @param  {Object}        options Options available:
    * {
-   *   tagToLatest: {Boolean} [Default: false] Tag image to latest and remove original tag.
+   *   streamRepoTag: {String}  [Default: undefined] Specify repo:tag for the image stream.
+   *   tagToLatest:   {Boolean} [Default: false] Tag image to latest and remove original tag.
+   *   registryURL:   {String}  [Default: '' (dockerhub)] Registry URL where the image should be uploaded to.
    * }
    * @return {Array}                 Repo tags of the image.
    */
   async upload(src, options = {}) {
-    const dbg = debug('watchtower:load');
+    const dbg = debug('watchtower:upload');
     let extractor = new ManifestExtractor();
     let tarpath = `${os.tmpdir()}/${Date.now()}.tar`;
     let stream;
@@ -614,10 +617,10 @@ export default class Watchtower extends EventEmitter {
         .pipe(fs.createWriteStream(tarpath));
     } else if (src instanceof Readable) {
       stream = src;
-      if (options.repoTag) {
-        repoTags = [options.repoTag];
+      if (options.streamRepoTag) {
+        repoTags = [options.streamRepoTag];
       } else {
-        return Promise.reject('You have to set options.repoTag when image source is a stream');
+        return Promise.reject('You have to set options.streamRepoTag when image source is a stream');
       }
     } else {
       const error = 'Unsupported type of image source';
@@ -638,17 +641,20 @@ export default class Watchtower extends EventEmitter {
     let containers = await this.docker.listContainers();
     containers.forEach((container) => {
       for (let i = 0; i < repoTags.length; i++) {
-        let { repo, tag } = this.parseImageName(repoTags[i]);
-        let repoTag;
+        let repoTagCtn = this.parseImageName(container.Image);
+        let repoTagImg = this.parseImageName(repoTags[i], { removeHostFromRepo: true });
 
-        if (options.tagToLatest || tag === 'latest') {
-          repoTag = `${repo}`;
-        } else {
-          repoTag = `${repo}:${tag}`;
+        if (options.registryURL) {
+          repoTagImg.repo = `${options.registryURL}/${repoTagImg.repo}`;
         }
-        dbg(`Compare ${container.Image} to ${repoTag}`);
-        if (repoTag === container.Image) {
-          backupRunningRepoTag = repoTag;
+
+        if (options.tagToLatest) {
+          repoTagImg.tag = 'latest';
+        }
+
+        dbg(`Compare ${repoTagCtn.repo}:${repoTagCtn.tag} to ${repoTagImg.repo}:${repoTagImg.tag}`);
+        if (`${repoTagCtn.repo}:${repoTagCtn.tag}` === `${repoTagImg.repo}:${repoTagImg.tag}`) {
+          backupRunningRepoTag = container.Image;
           break;
         }
       }
@@ -666,29 +672,40 @@ export default class Watchtower extends EventEmitter {
     extractor.removeAllListeners();
     fs.unlink(tarpath);
 
+    let targetRepoTag = repoTags[0];
+
+    if (options.registryURL) {
+      let { repo, tag } = this.parseImageName(targetRepoTag, { removeHostFromRepo: true });
+      dbg(`Add RepoTag ${options.registryURL}/${repo}:${tag} (registryURL)`);
+      targetRepoTag = `${options.registryURL}/${repo}:${tag}`;
+    }
+
     if (options.tagToLatest) {
-      let { repo, tag } = this.parseImageName(repoTags[0]);
+      let { repo, tag } = this.parseImageName(targetRepoTag);
       if (tag !== 'latest') {
-        dbg(`Tag uploaded image ${repoTags[0]} to ${repo}:latest`);
-        await this.docker.getImage(repoTags[0]).tag({ repo, tag: 'latest' });
-        dbg(`Remove image tag ${repoTags[0]}`);
-        await this.docker.getImage(repoTags[0]).remove();
-        dbg(`Add RepoTag ${repo}:latest`);
-        repoTags.unshift(`${repo}:latest`);
+        dbg(`Add RepoTag ${repo}:latest (tagToLatest)`);
+        targetRepoTag = `${repo}:latest`;
       }
     }
 
+    if (repoTags[0] !== targetRepoTag) {
+      dbg(`Tag uploaded image ${repoTags[0]} to ${targetRepoTag}`);
+      let { repo, tag } = this.parseImageName(targetRepoTag);
+      await this.docker.getImage(repoTags[0]).tag({ repo, tag });
+      dbg(`Remove image tag ${repoTags[0]}`);
+      await this.docker.getImage(repoTags[0]).remove();
+    }
+
     /* Push uploaded image */
-    let repoTag = backupRunningRepoTag || repoTags[0];
-    let { host } = this.parseImageName(repoTag);
+    let { host } = this.parseImageName(targetRepoTag);
     let pushOptions = { authconfig: this.registryAuths[host] };
 
-    dbg(`Pushing image ${repoTag}...`);
+    dbg(`Pushing image ${targetRepoTag}...`);
 
-    let pushStream = await this.docker.getImage(repoTag).push(pushOptions);
+    let pushStream = await this.docker.getImage(targetRepoTag).push(pushOptions);
     await this.followProgress(pushStream);
 
-    dbg(`Image ${repoTag} pushed`);
+    dbg(`Image ${targetRepoTag} pushed`);
 
     /* Revert back image who is used by running container */
     if (backupRunningRepoTag) {
@@ -702,7 +719,7 @@ export default class Watchtower extends EventEmitter {
 
     dbg(`Image ${stream.path || 'stream'} loaded`);
 
-    return Promise.resolve(repoTag);
+    return Promise.resolve(targetRepoTag);
   }
 
   /**

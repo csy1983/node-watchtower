@@ -121,12 +121,14 @@ describe('Watchtower', function() {
     it(`should upload ${TEST_PRIVATE_IMAGE} image`, function(done) {
       this.timeout(60000);
 
-      watchtower.upload(`./test/images/${TEST_PRIVATE_IMAGE}.tar.gz`, { tagToLatest: true })
-        .then((repoTag) => {
-          DEBUG(`${repoTag} uploaded`);
-          done();
-        })
-        .catch(done);
+      watchtower.upload(`./test/images/${TEST_PRIVATE_IMAGE}.tar.gz`, {
+        registryURL: 'csy-mbp:5000',
+        tagToLatest: true,
+      }).then((repoTag) => {
+        DEBUG(`${repoTag} uploaded`);
+        done();
+      })
+      .catch(done);
     });
   });
 
